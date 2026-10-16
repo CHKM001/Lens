@@ -1186,6 +1186,8 @@ export interface components {
             stalenessThresholdSeconds?: number;
             /** @description True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds. */
             stale?: boolean;
+            /** @description Venues whose last written price is older than their staleness bound. Their prices are excluded from this aggregate; the list makes that exclusion visible rather than silent. Empty when every venue is live. */
+            excludedVenues?: string[];
         };
         RouteHop: {
             assetIn: components["schemas"]["Asset"];
@@ -2271,6 +2273,18 @@ export interface operations {
                         ingestLagSeconds?: number | null;
                         /** @description Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false. */
                         adminConfigured?: boolean;
+                        /** @description Per-venue heartbeat: last successful read, last successful write to price_points, and the count of consecutive failed reads. A venue whose lastWrite is older than its stalenessThresholdMs is excluded from price aggregation. */
+                        venueHeartbeats?: {
+                            venue?: string;
+                            /** @enum {string} */
+                            network?: "testnet" | "mainnet";
+                            /** Format: date-time */
+                            lastSuccess?: string | null;
+                            /** Format: date-time */
+                            lastWrite?: string | null;
+                            consecutiveFailures?: number;
+                            stalenessThresholdMs?: number;
+                        }[];
                     };
                 };
             };

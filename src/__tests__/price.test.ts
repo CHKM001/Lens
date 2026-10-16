@@ -76,7 +76,7 @@ describe('GET /price/:assetA/:assetB confidence score', () => {
 
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: recent }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: recent }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }, { source: 'AMM', vol: '50' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '2' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -101,7 +101,7 @@ describe('GET /price/:assetA/:assetB confidence score', () => {
 
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: twoMinAgo }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: twoMinAgo }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -122,7 +122,7 @@ describe('GET /price/:assetA/:assetB confidence score', () => {
     const tenMinAgo = new Date(now.getTime() - 600000).toISOString() // 10m ago
 
     mockQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: tenMinAgo }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: tenMinAgo }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -140,7 +140,7 @@ describe('GET /price/:assetA/:assetB confidence score', () => {
 
   it('returns unknown confidence when no trades found', async () => {
     mockQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: null }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: null }] }
       return { rows: [] }
     })
 
@@ -241,8 +241,8 @@ describe('GET /price/:assetA/:assetB network scoping', () => {
     mockGetBestRoute.mockResolvedValue({ route: 'SDEX' })
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date(Date.now() - 10000).toISOString() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date(Date.now() - 10000).toISOString() }] }
       }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
@@ -307,6 +307,7 @@ describe('GET /price/:assetA/:assetB network scoping', () => {
       inputCount: 1,
       stalenessThresholdSeconds: 300,
       stale: false,
+      excludedVenues: [],
       bestRoute: 'SDEX',
       lastUpdated: '2026-09-27T00:00:00.000Z',
     }))

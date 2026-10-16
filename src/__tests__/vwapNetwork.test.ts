@@ -130,10 +130,10 @@ function installSeededDb() {
       return { rows: [{ amm_price: String(avg) }] }
     }
 
-    if (sql.includes('MAX(timestamp) as last_trade')) {
+    if (sql.includes('as last_observed_at')) {
       const rows = rowsInWindow(network, pairKey, windowMinutes)
       const newest = rows.reduce<SeedPoint | undefined>((acc, r) => (!acc || r.ageSeconds < acc.ageSeconds ? r : acc), undefined)
-      return { rows: [{ last_trade: newest ? at(newest.ageSeconds) : null }] }
+      return { rows: [{ last_observed_at: newest ? at(newest.ageSeconds) : null }] }
     }
 
     if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) {

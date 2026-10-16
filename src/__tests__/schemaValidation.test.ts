@@ -85,6 +85,7 @@ function validAggregate() {
     inputCount: 2,
     stalenessThresholdSeconds: 300,
     stale: false,
+    excludedVenues: [] as string[],
     bestRoute: 'SDEX' as const,
   }
 }

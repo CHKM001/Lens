@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { getCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
+import { getStaleVenues } from '../venueHeartbeat'
 import { pgPool } from '../db'
 import { config, activeNetwork, type NetworkName } from '../config'
 import { parseAssetStr, getActivePairs } from '../pairsRegistry'
@@ -149,6 +150,8 @@ export const schema = `
     sources: Int!
     confidence: String!
     lastTradeAgeSeconds: Int
+    """Venues excluded from this aggregate because their last written price is stale."""
+    excludedVenues: [String!]!
   }
 
   type RouteInfo {
@@ -601,7 +604,7 @@ export const resolvers = {
         try { return JSON.parse(cached) } catch { /* fall through */ }
       }
 
-      const agg = await getAggregatedPrice(pairKey, activeNetwork)
+      const agg = await getAggregatedPrice(pairKey, activeNetwork, undefined, getStaleVenues(activeNetwork))
       const route = await getBestRoute(pair.assetA, pair.assetB, pairKey, 1000, activeNetwork)
       return {
         assetA, assetB, pairKey, ...agg,

@@ -232,8 +232,8 @@ describe('aggregator/vwap.ts', () => {
         }
 
         // Last trade timestamp
-        if (sql.includes('MAX(timestamp) as last_trade')) {
-          return { rows: [{ last_trade: lastTradeDate ? lastTradeDate.toISOString() : null }] }
+        if (sql.includes('as last_observed_at')) {
+          return { rows: [{ last_observed_at: lastTradeDate ? lastTradeDate.toISOString() : null }] }
         }
 
         // Volume by source

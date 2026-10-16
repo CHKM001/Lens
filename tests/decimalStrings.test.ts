@@ -97,8 +97,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return { rows: [{ source: 'SDEX', vol: '150.5' }] }
@@ -133,8 +133,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0.000000000000000000' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return { rows: [{ source: 'SDEX', vol: '500.123456789012345678' }] }
@@ -176,8 +176,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return { rows: [{ source: 'SDEX', vol: '100' }] }
@@ -210,8 +210,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return { rows: [{ source: 'SDEX', vol: '100' }] }
@@ -241,8 +241,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return { rows: [{ source: 'SDEX', vol: '100' }] }
@@ -380,8 +380,8 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
       if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
         return { rows: [{ amm_price: '0.000000000000000000' }] }
       }
-      if (sql.includes('MAX(timestamp) as last_trade')) {
-        return { rows: [{ last_trade: new Date() }] }
+      if (sql.includes('as last_observed_at')) {
+        return { rows: [{ last_observed_at: new Date() }] }
       }
       if (sql.includes('GROUP BY source')) {
         return {

@@ -66,7 +66,7 @@ describe('stale price flag and freshness metadata', () => {
 
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: oldTrade, input_count: '5' }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: oldTrade, input_count: '5' }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -92,7 +92,7 @@ describe('stale price flag and freshness metadata', () => {
 
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: recentTrade, input_count: '3' }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: recentTrade, input_count: '3' }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -114,7 +114,7 @@ describe('stale price flag and freshness metadata', () => {
 
   it('returns stale=false when no trades exist', async () => {
     mockQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: null, input_count: '0' }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: null, input_count: '0' }] }
       return { rows: [] }
     })
 
@@ -141,7 +141,7 @@ describe('stale price flag and freshness metadata', () => {
 
       mockQuery.mockImplementation(async (sql: string) => {
         if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-        if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: tradeTime, input_count: '4' }] }
+        if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: tradeTime, input_count: '4' }] }
         if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
         if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
         if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }
@@ -184,7 +184,7 @@ describe('stale price flag and freshness metadata', () => {
 
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('AVG(spot_price::numeric)')) return { rows: [{ amm_price: '0.1' }] }
-      if (sql.includes('MAX(timestamp) as last_trade')) return { rows: [{ last_trade: tradeTime, input_count: '2' }] }
+      if (sql.includes('as last_observed_at')) return { rows: [{ last_observed_at: tradeTime, input_count: '2' }] }
       if (sql.includes('GROUP BY source')) return { rows: [{ source: 'SDEX', vol: '100' }] }
       if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) return { rows: [{ sources: '1' }] }
       if (sql.includes('SUM(price::numeric * base_volume::numeric)')) return { rows: [{ vwap: '0.1' }] }

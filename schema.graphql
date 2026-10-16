@@ -32,6 +32,11 @@ type AggregatedPrice {
   sources: Int!
   confidence: String!
   lastTradeAgeSeconds: Int
+
+  """
+  Venues excluded from this aggregate because their last written price is stale.
+  """
+  excludedVenues: [String!]!
 }
 
 type RouteInfo {

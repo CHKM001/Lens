@@ -23,11 +23,26 @@ export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM',
+  excludedSources: string[] = [],
 ): Promise<{ num: number; raw: string }> {
-  const sourceFilter = source ? `AND source = $4` : ''
+  const conditions: string[] = [
+    `pair_key = $1`,
+    `network = $2`,
+    `COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval`,
+  ]
   const params: (string | number)[] = [pairKey, network, windowMinutes]
-  if (source) params.push(source)
+
+  if (source) {
+    params.push(source)
+    conditions.push(`source = $${params.length}`)
+  }
+
+  if (excludedSources.length > 0) {
+    params.push(...excludedSources)
+    const placeholders = excludedSources.map((_, i) => `$${params.length - excludedSources.length + i + 1}`).join(', ')
+    conditions.push(`source NOT IN (${placeholders})`)
+  }
 
   const result = await pgPool.query(
     `SELECT
@@ -36,10 +51,7 @@ export async function calculateVWAPDetailed(
          0
        ) AS vwap
      FROM price_points
-     WHERE pair_key = $1
-       AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
-       ${sourceFilter}`,
+     WHERE ${conditions.join('\n       AND ')}`,
     params
   )
   const raw = String(result.rows[0]?.vwap ?? '0')
@@ -50,9 +62,10 @@ export async function calculateVWAP(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM',
+  excludedSources: string[] = [],
 ): Promise<number> {
-  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
+  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source, excludedSources)
   return detailed.num
 }
 
@@ -214,6 +227,7 @@ export interface AggregatedPriceNumeric {
   inputCount: number
   stalenessThresholdSeconds: number
   stale: boolean
+  excludedVenues: string[]
 }
 
 export interface AggregatedPriceString {
@@ -235,60 +249,81 @@ export interface AggregatedPriceString {
   inputCount: number
   stalenessThresholdSeconds: number
   stale: boolean
+  excludedVenues: string[]
 }
 
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options: { decimalFormat: 'string'; staleThresholdSeconds?: number }
+  options: { decimalFormat: 'string'; staleThresholdSeconds?: number },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceString>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: 'number'; staleThresholdSeconds?: number }
+  options?: { decimalFormat?: 'number'; staleThresholdSeconds?: number },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceNumeric>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: DecimalFormat; staleThresholdSeconds?: number }
+  options?: { decimalFormat?: DecimalFormat; staleThresholdSeconds?: number },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceNumeric | AggregatedPriceString>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: DecimalFormat; staleThresholdSeconds?: number }
+  options?: { decimalFormat?: DecimalFormat; staleThresholdSeconds?: number },
+  excludedSources: string[] = []
 ): Promise<AggregatedPriceNumeric | AggregatedPriceString> {
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
-    calculateVWAPDetailed(pairKey, 1, network),
-    calculateVWAPDetailed(pairKey, 5, network),
-    calculateVWAPDetailed(pairKey, 60, network),
-    calculateVWAPDetailed(pairKey, 1440, network),
-    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX'),
+    calculateVWAPDetailed(pairKey, 1, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 5, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 60, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 1440, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX', excludedSources),
     getPriceChange24hDetailed(pairKey, network),
     // AMM price: latest spot_price averaged across pools for this pair, on this
     // network only. Both halves of the lookup are network-filtered: the outer
     // scan of pool_snapshots, and the price_points subquery that decides which
     // pool ids count as this pair. Filtering only the outer scan would still let
     // a same-named pool on the other chain contribute its price.
-    pgPool.query(
-      `SELECT AVG(spot_price::numeric) AS amm_price
-       FROM (
-         SELECT DISTINCT ON (ps.pool_id) ps.spot_price
-         FROM pool_snapshots ps
-         WHERE ps.network = $2
-           AND ps.pool_id IN (
-             SELECT DISTINCT pool_id FROM price_points
-             WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
-           )
-         ORDER BY ps.pool_id, ps.timestamp DESC
-       ) latest`,
-      [pairKey, network]
-    ),
-    // Last trade timestamp and input count
-    pgPool.query(
-      `SELECT MAX(timestamp) as last_trade, COUNT(*) as input_count FROM price_points
-       WHERE pair_key = $1 AND network = $2`,
-      [pairKey, network]
-    ),
+    //
+    // If 'AMM' is excluded we skip this sub-query by returning a null-row result
+    // rather than changing the SQL structure — the ammPrice comes out as 0.
+    excludedSources.includes('AMM')
+      ? Promise.resolve({ rows: [{ amm_price: null }] })
+      : pgPool.query(
+          `SELECT AVG(spot_price::numeric) AS amm_price
+           FROM (
+             SELECT DISTINCT ON (ps.pool_id) ps.spot_price
+             FROM pool_snapshots ps
+             WHERE ps.network = $2
+               AND ps.pool_id IN (
+                 SELECT DISTINCT pool_id FROM price_points
+                 WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
+               )
+             ORDER BY ps.pool_id, ps.timestamp DESC
+           ) latest`,
+          [pairKey, network]
+        ),
+    // Newest observation time + input count, excluding stale sources so the age
+    // reflects live data only. We measure against observed_at (the Lens-ingestion
+    // wall-clock, NOT NULL post-migration; COALESCE to the legacy source `timestamp`
+    // only for pre-migration rows) — this is a liveness clock, "when did we last
+    // ingest a sample", not the age of the most recent trade at its source.
+    excludedSources.length > 0
+      ? pgPool.query(
+          `SELECT MAX(COALESCE(observed_at, timestamp)) as last_observed_at, COUNT(*) as input_count FROM price_points
+           WHERE pair_key = $1 AND network = $2
+             AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`,
+          [pairKey, network, ...excludedSources]
+        )
+      : pgPool.query(
+          `SELECT MAX(COALESCE(observed_at, timestamp)) as last_observed_at, COUNT(*) as input_count FROM price_points
+           WHERE pair_key = $1 AND network = $2`,
+          [pairKey, network]
+        ),
   ])
 
   const volResult = await pgPool.query(
@@ -300,12 +335,15 @@ export async function getAggregatedPrice(
        WHERE pair_key = $1
          AND network = $2
          AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '24 hours'
+         ${excludedSources.length > 0
+           ? `AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`
+           : ''}
        GROUP BY source
      )
      SELECT source, vol FROM per_source
      UNION ALL
      SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
-    [pairKey, network]
+    [pairKey, network, ...excludedSources]
   )
 
   let sdexVolume24hRaw = '0'
@@ -335,21 +373,27 @@ export async function getAggregatedPrice(
      FROM price_points
      WHERE pair_key = $1
        AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'`,
-    [pairKey, network]
+       AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'
+       ${excludedSources.length > 0
+         ? `AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`
+         : ''}`,
+    [pairKey, network, ...excludedSources]
   )
 
   const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
   const ammPrice = parseFloat(ammPriceRaw)
-  const lastTrade = lastTradeResult.rows[0]?.last_trade
-  const lastTradeAgeSeconds = lastTrade ? Math.floor((Date.now() - new Date(lastTrade).getTime()) / 1000) : null
+  // Newest observation time (observed_at clock, see query above). lastTradeAgeSeconds
+  // keeps its public name but measures time since that newest observation — i.e. how
+  // long since we last ingested a live sample, which is what the stale flag enforces.
+  const lastObservedAt = lastTradeResult.rows[0]?.last_observed_at
+  const lastTradeAgeSeconds = lastObservedAt ? Math.floor((Date.now() - new Date(lastObservedAt).getTime()) / 1000) : null
   const sources = parseInt(sourcesResult.rows[0]?.sources ?? '0', 10)
 
   const rawInputCount = lastTradeResult.rows[0]?.input_count
   const inputCount = rawInputCount !== undefined
     ? parseInt(rawInputCount, 10)
-    : (lastTrade ? Math.max(1, sources) : 0)
-  const newestInputObservedAt = lastTrade ? new Date(lastTrade).toISOString() : null
+    : (lastObservedAt ? Math.max(1, sources) : 0)
+  const newestInputObservedAt = lastObservedAt ? new Date(lastObservedAt).toISOString() : null
 
   const staleThreshold = options?.staleThresholdSeconds
     ?? (config as any).pricing?.staleThresholdSeconds
@@ -395,6 +439,7 @@ export async function getAggregatedPrice(
       inputCount,
       stalenessThresholdSeconds: staleThreshold,
       stale,
+      excludedVenues: excludedSources,
     }
   }
 
@@ -417,6 +462,7 @@ export async function getAggregatedPrice(
     inputCount,
     stalenessThresholdSeconds: staleThreshold,
     stale,
+    excludedVenues: excludedSources,
   }
 }
 

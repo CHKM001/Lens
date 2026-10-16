@@ -82,6 +82,7 @@ vi.mock('../config', () => ({
 }))
 
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from '../jobs/aggregateRefresh'
+import { recordVenueSuccess, _resetHeartbeats, DEFAULT_STALENESS_MS } from '../venueHeartbeat'
 
 describe('aggregateRefresh runs once per enabled network', () => {
   beforeEach(() => {
@@ -133,7 +134,7 @@ describe('aggregateRefresh runs once per enabled network', () => {
 
     await processor({ data: { pairKey: mainnetPair.pairKey, pair: mainnetPair, network: 'mainnet' } })
 
-    expect(mockGetAggregatedPrice).toHaveBeenCalledWith(mainnetPair.pairKey, 'mainnet')
+    expect(mockGetAggregatedPrice).toHaveBeenCalledWith(mainnetPair.pairKey, 'mainnet', undefined, [])
     expect(mockGetBestRoute).toHaveBeenCalledWith(
       mainnetPair.assetA, mainnetPair.assetB, mainnetPair.pairKey, 1000, 'mainnet'
     )
@@ -169,5 +170,24 @@ describe('aggregateRefresh runs once per enabled network', () => {
     expect(mockSetCachedPrice).toHaveBeenCalledWith(
       `testnet:${testnetPair.pairKey}`, expect.objectContaining({ network: 'testnet' }), 10
     )
+  })
+
+  it('drops a stale venue from the cached payload and the precomputed buckets', async () => {
+    _resetHeartbeats()
+    // SDEX wrote a price 10 minutes ago and has since gone stale.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(Date.now() - DEFAULT_STALENESS_MS - 1000))
+    recordVenueSuccess('SDEX', 'mainnet')
+    vi.useRealTimers()
+
+    startAggregateWorker('mainnet')
+    await workers[0].processor({ data: { pairKey: mainnetPair.pairKey, pair: mainnetPair, network: 'mainnet' } })
+
+    // The aggregate is computed with SDEX excluded…
+    expect(mockGetAggregatedPrice).toHaveBeenCalledWith(mainnetPair.pairKey, 'mainnet', undefined, ['SDEX'])
+    // …and every window's VWAP/exclusion list carries that exclusion.
+    for (const call of mockCalculateVWAP.mock.calls) {
+      expect(call[call.length - 1]).toEqual(['SDEX'])
+    }
   })
 })
