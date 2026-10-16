@@ -304,6 +304,7 @@ describe('GET /price/:assetA/:assetB network scoping', () => {
       confidence: 'medium',
       lastTradeAgeSeconds: 60,
       stale: false,
+      excludedVenues: [],
       bestRoute: 'SDEX',
       lastUpdated: '2026-09-27T00:00:00.000Z',
     }))

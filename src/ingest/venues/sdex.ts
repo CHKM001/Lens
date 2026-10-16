@@ -7,6 +7,7 @@ import { resolvePageLedgers } from '../../ingesters/toid'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
 import { createLogger } from '../../logger'
+import { recordVenueSuccess, recordVenueFailure, recordVenueReadSuccess } from '../../venueHeartbeat'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -66,7 +67,13 @@ export async function fetchSdexTrades(
       .call()
 
     const records = trades.records
-    if (!records.length) return null
+    if (!records.length) {
+      // Horizon answered successfully with no new trades: the adapter is alive,
+      // it just has nothing to write. Recording the read keeps a quiet venue
+      // distinguishable from a dead one.
+      recordVenueReadSuccess('SDEX', network)
+      return null
+    }
 
     return {
       records,
@@ -76,13 +83,15 @@ export async function fetchSdexTrades(
     }
   } catch (err) {
     log.error({ pair: pair.pairKey, err }, 'error fetching trades')
+    recordVenueFailure('SDEX', network)
     return null
   }
 }
 
 export function deriveSdexPricePoints(
   raw: SdexRawTrades,
-  pair: WatchedPair
+  pair: WatchedPair,
+  network: NetworkName = activeNetwork
 ): { points: VenuePricePoint[]; finalLedger: number; lastPagingToken: string } | null {
   const { records, stateId, lastLedger } = raw
 
@@ -96,6 +105,8 @@ export function deriveSdexPricePoints(
       { pair: pair.pairKey, trades: records.length },
       'no ledger derivable from trades; skipping batch'
     )
+    // The read succeeded; the batch is just not persistable this cycle.
+    recordVenueReadSuccess('SDEX', network)
     return null
   }
 
@@ -149,6 +160,7 @@ export async function writeSdexPricePoints(
     { pair: pair.pairKey, network },
     Math.floor(points[points.length - 1].timestamp.getTime() / 1000)
   )
+  recordVenueSuccess('SDEX', network)
 
   await setIndexerCursor(stateId, lastPagingToken, network, finalLedger)
   log.info({ pair: pair.pairKey, trades: points.length }, 'ingested trades')
@@ -173,7 +185,7 @@ export async function ingestPair(pair: WatchedPair, network: NetworkName = activ
   const raw = await fetchSdexTrades(pair, network, signal)
   if (!raw) return
 
-  const derived = deriveSdexPricePoints(raw, pair)
+  const derived = deriveSdexPricePoints(raw, pair, network)
   if (!derived || derived.points.length === 0) return
 
   // Cycle-deadline checkpoint (#351), placed before the write SEQUENCE as a
@@ -210,8 +222,8 @@ export const sdexAdapter: VenueAdapter<WatchedPair, SdexRawTrades> = {
     return fetchSdexTrades(target, network)
   },
 
-  derive(raw: SdexRawTrades, _target: WatchedPair, pair: WatchedPair, _network: NetworkName): VenuePricePoint[] {
-    const derived = deriveSdexPricePoints(raw, pair)
+  derive(raw: SdexRawTrades, _target: WatchedPair, pair: WatchedPair, network: NetworkName): VenuePricePoint[] {
+    const derived = deriveSdexPricePoints(raw, pair, network)
     return derived ? derived.points : []
   },
 

@@ -705,10 +705,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Query latest lending and borrow rates across pools
+         * @description Returns the latest supply and borrow rates, utilisation, and reserves for lending markets.
+         */
+        get: operations["getLendingRates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        LendingRateEntry: {
+            id: string;
+            /** @example blend */
+            venue: string;
+            /** @example blend */
+            source: string;
+            /** @example mainnet */
+            network: string;
+            poolId: string;
+            poolName?: string | null;
+            /** @example USDC */
+            asset: string;
+            assetAddress?: string | null;
+            supplyApy: number;
+            borrowApy: number;
+            supplyApr?: number | null;
+            borrowApr?: number | null;
+            /** @description Borrowed / supplied as a fraction. Null for venues that publish rates only. */
+            utilization?: number | null;
+            totalSupply?: number | null;
+            totalBorrowed?: number | null;
+            reserves?: number | null;
+            ledger?: number;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        LendingRatesResponse: {
+            network: string;
+            rates: components["schemas"]["LendingRateEntry"][];
+        };
         InternalErrorResponse: {
             /**
              * @example internal_error
@@ -912,6 +962,8 @@ export interface components {
             /** @enum {string} */
             confidence?: "high" | "medium" | "low" | "unknown";
             lastTradeAgeSeconds?: number | null;
+            /** @description Venues whose last written price is older than their staleness bound. Their prices are excluded from this aggregate; the list makes that exclusion visible rather than silent. Empty when every venue is live. */
+            excludedVenues?: string[];
         };
         RouteHop: {
             assetIn: components["schemas"]["Asset"];
@@ -1502,6 +1554,13 @@ export interface components {
                 "application/json": components["schemas"]["InternalErrorResponse"];
             };
         };
+        /** @description Invalid parameters */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content?: never;
+        };
     };
     parameters: {
         /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */
@@ -1695,6 +1754,18 @@ export interface operations {
                         ingestLagSeconds?: number | null;
                         /** @description Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false. */
                         adminConfigured?: boolean;
+                        /** @description Per-venue heartbeat: last successful read, last successful write to price_points, and the count of consecutive failed reads. A venue whose lastWrite is older than its stalenessThresholdMs is excluded from price aggregation. */
+                        venueHeartbeats?: {
+                            venue?: string;
+                            /** @enum {string} */
+                            network?: "testnet" | "mainnet";
+                            /** Format: date-time */
+                            lastSuccess?: string | null;
+                            /** Format: date-time */
+                            lastWrite?: string | null;
+                            consecutiveFailures?: number;
+                            stalenessThresholdMs?: number;
+                        }[];
                     };
                 };
             };
@@ -3116,6 +3187,37 @@ export interface operations {
                 };
             };
             402: components["responses"]["PaymentRequired"];
+        };
+    };
+    getLendingRates: {
+        parameters: {
+            query?: {
+                /** @description Filter by asset symbol (e.g. USDC, XLM) */
+                asset?: string;
+                /** @description Filter by pool contract ID */
+                poolId?: string;
+                /** @description Stellar network to query (testnet or mainnet) */
+                network?: "testnet" | "mainnet";
+                /** @description Maximum number of rate records to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest lending rates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LendingRatesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
 }

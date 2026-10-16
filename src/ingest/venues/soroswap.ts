@@ -28,6 +28,7 @@ import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
 import { createLogger } from '../../logger'
 import { fetchWithTimeout } from '../../fetch'
+import { recordVenueSuccess, recordVenueFailure, recordVenueReadSuccess } from '../../venueHeartbeat'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -332,6 +333,8 @@ export async function ingestPool(
 
     if (spotPrice === 0) {
       log.debug({ pool: poolEntry.poolAddress, pair: pair.pairKey }, 'skipping empty pool')
+      // Reserves were read and the pool is simply empty; the adapter is alive.
+      recordVenueReadSuccess('soroswap_amm', network)
       return
     }
 
@@ -381,6 +384,7 @@ export async function ingestPool(
       network
     )
     markIngestSuccess('Soroswap', network)
+    recordVenueSuccess('soroswap_amm', network)
 
     const trackerKey = pair.pairKey
     const { previousPrice } = setLastPrice('Soroswap', network, trackerKey, spotPrice)
@@ -406,6 +410,7 @@ export async function ingestPool(
     )
   } catch (err) {
     log.error({ pool: poolEntry.poolAddress, err }, 'ingestPool error')
+    recordVenueFailure('soroswap_amm', network)
   }
 }
 

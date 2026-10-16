@@ -5,6 +5,7 @@ import { resolvePageLedgers } from '../../ingesters/toid'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
 import { createLogger } from '../../logger'
+import { recordVenueSuccess, recordVenueFailure, recordVenueReadSuccess } from '../../venueHeartbeat'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import { fetchHorizonJson, HorizonRateLimitError } from './horizon'
@@ -133,6 +134,11 @@ export async function snapshotPool(
       const trackerKey = pair.pairKey
       const { previousPrice } = setLastPrice('AMM', network, trackerKey, spotPrice)
 
+      // The snapshot wrote a fresh AMM price point from the pool's current
+      // reserves, so the venue has produced new data this cycle even when no
+      // trades occurred.
+      recordVenueSuccess('AMM', network)
+
       publishPriceUpdate({
         pair: pair.pairKey,
         price: spotPrice,
@@ -173,7 +179,10 @@ export async function ingestPoolTrades(
     )
     const records = data._embedded?.records ?? []
 
-    if (!records.length) return
+    if (!records.length) {
+      recordVenueReadSuccess('AMM', network)
+      return
+    }
 
     // Horizon returns no `ledger` on a pool trade; it lives in the TOID prefix.
     const ledgers = resolvePageLedgers(
@@ -185,6 +194,7 @@ export async function ingestPoolTrades(
         { pool: pool.id, trades: records.length },
         'no ledger derivable from trades; skipping batch'
       )
+      recordVenueReadSuccess('AMM', network)
       return
     }
 
@@ -234,6 +244,7 @@ export async function ingestPoolTrades(
       { pair: pair.pairKey, network },
       Math.floor(points[points.length - 1].timestamp.getTime() / 1000)
     )
+    recordVenueSuccess('AMM', network)
 
     const lastRecord = records[records.length - 1]
     await setIndexerCursor(stateId, lastRecord.paging_token, network, ledgers[ledgers.length - 1])
@@ -256,6 +267,7 @@ export async function ingestPoolTrades(
   } catch (err) {
     if (err instanceof HorizonRateLimitError) throw err
     log.error({ pool: pool.id, err }, 'trade ingest error')
+    recordVenueFailure('AMM', network)
   }
 }
 

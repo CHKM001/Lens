@@ -66,11 +66,10 @@ describe('fetchAquariusPools', () => {
     )
   })
 
-  it('returns an empty array on a non-ok response', async () => {
-    ;(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false })
+  it('throws on a non-ok response so the caller can record a read failure', async () => {
+    ;(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false, status: 503 })
 
-    const result = await fetchAquariusPools(mockPair as any)
-    expect(result).toEqual([])
+    await expect(fetchAquariusPools(mockPair as any)).rejects.toThrow('Aquarius API returned 503')
   })
 })
 

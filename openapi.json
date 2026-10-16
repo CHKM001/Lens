@@ -364,6 +364,41 @@
                     "adminConfigured": {
                       "type": "boolean",
                       "description": "Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false."
+                    },
+                    "venueHeartbeats": {
+                      "type": "array",
+                      "description": "Per-venue heartbeat: last successful read, last successful write to price_points, and the count of consecutive failed reads. A venue whose lastWrite is older than its stalenessThresholdMs is excluded from price aggregation.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "venue": {
+                            "type": "string"
+                          },
+                          "network": {
+                            "type": "string",
+                            "enum": [
+                              "testnet",
+                              "mainnet"
+                            ]
+                          },
+                          "lastSuccess": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "lastWrite": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "consecutiveFailures": {
+                            "type": "integer"
+                          },
+                          "stalenessThresholdMs": {
+                            "type": "integer"
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -2992,6 +3027,9 @@
             }
           }
         }
+      },
+      "BadRequest": {
+        "description": "Invalid parameters"
       }
     },
     "headers": {
@@ -3803,6 +3841,13 @@
           "lastTradeAgeSeconds": {
             "type": "integer",
             "nullable": true
+          },
+          "excludedVenues": {
+            "type": "array",
+            "description": "Venues whose last written price is older than their staleness bound. Their prices are excluded from this aggregate; the list makes that exclusion visible rather than silent. Empty when every venue is live.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

@@ -10,6 +10,7 @@
 
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
 import { createLogger } from '../../logger'
+import { recordVenueSuccess, recordVenueFailure, recordVenueReadSuccess } from '../../venueHeartbeat'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -40,33 +41,36 @@ export interface AquariusListResponse {
   results?: AquariusPool[]
 }
 
+/**
+ * Fetch the Aquarius pool list for a pair.
+ *
+ * Throws when the upstream cannot be read (transport error or a non-2xx
+ * response) so the caller can distinguish a dead API from a pair that simply
+ * has no pools. A successful read of an empty result returns `[]` — that is a
+ * quiet venue, not a failed one.
+ */
 export async function fetchAquariusPools(
   pair: WatchedPair,
   apiUrl: string = config.aquarius.apiUrl,
   signal?: AbortSignal
 ): Promise<AquariusPool[]> {
-  try {
-    if (signal?.aborted) return []
+  if (signal?.aborted) return []
 
-    const assetAStr = pair.assetA.issuer
-      ? `${pair.assetA.code}:${pair.assetA.issuer}`
-      : 'native'
-    const assetBStr = pair.assetB.issuer
-      ? `${pair.assetB.code}:${pair.assetB.issuer}`
-      : 'native'
+  const assetAStr = pair.assetA.issuer
+    ? `${pair.assetA.code}:${pair.assetA.issuer}`
+    : 'native'
+  const assetBStr = pair.assetB.issuer
+    ? `${pair.assetB.code}:${pair.assetB.issuer}`
+    : 'native'
 
-    const params = new URLSearchParams()
-    params.append('assets[]', assetAStr)
-    params.append('assets[]', assetBStr)
+  const params = new URLSearchParams()
+  params.append('assets[]', assetAStr)
+  params.append('assets[]', assetBStr)
 
-    const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`, { signal })
-    if (!res.ok) return []
-    const data = (await res.json()) as AquariusListResponse
-    return data.results ?? []
-  } catch (err) {
-    log.error({ pair: pair.pairKey, err }, 'failed to fetch pools')
-    return []
-  }
+  const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`, { signal })
+  if (!res.ok) throw new Error(`Aquarius API returned ${res.status}`)
+  const data = (await res.json()) as AquariusListResponse
+  return data.results ?? []
 }
 
 export function deriveAquariusPricePoints(
@@ -103,15 +107,31 @@ export async function ingestAquariusPair(
   network: NetworkName = activeNetwork,
   signal?: AbortSignal
 ): Promise<void> {
-  const pools = await fetchAquariusPools(
-    pair,
-    getNetworkConfig(network).aquarius.apiUrl,
-    signal
-  )
-  if (pools.length === 0) return
+  let pools: AquariusPool[]
+  try {
+    pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl, signal)
+  } catch (err) {
+    // A cycle abandoned on its own deadline (#471) is our timeout, not the venue
+    // going quiet, so it must not be recorded as a venue failure.
+    if (signal?.aborted) return
+    log.error({ pair: pair.pairKey, err }, 'failed to fetch pools')
+    recordVenueFailure('aquarius_amm', network)
+    return
+  }
+
+  if (pools.length === 0) {
+    // The API answered, there is just no pool for this pair: a successful read.
+    recordVenueReadSuccess('aquarius_amm', network)
+    return
+  }
 
   const points = deriveAquariusPricePoints(pools, pair)
-  if (points.length === 0) return
+  if (points.length === 0) {
+    // The pools were read but every one is empty or malformed, so there is no
+    // price to record. The read itself succeeded.
+    recordVenueReadSuccess('aquarius_amm', network)
+    return
+  }
 
   // Cycle-deadline checkpoint (#351): if the signal aborted while we were
   // fetching, skip the write instead of committing points from an abandoned
@@ -120,6 +140,7 @@ export async function ingestAquariusPair(
   if (signal?.aborted) return
 
   await writeVenuePricePoints('Aquarius', points, pair, network)
+  recordVenueSuccess('aquarius_amm', network)
 }
 
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {

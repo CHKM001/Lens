@@ -23,11 +23,26 @@ export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM',
+  excludedSources: string[] = [],
 ): Promise<{ num: number; raw: string }> {
-  const sourceFilter = source ? `AND source = $4` : ''
+  const conditions: string[] = [
+    `pair_key = $1`,
+    `network = $2`,
+    `timestamp > NOW() - ($3 || ' minutes')::interval`,
+  ]
   const params: (string | number)[] = [pairKey, network, windowMinutes]
-  if (source) params.push(source)
+
+  if (source) {
+    params.push(source)
+    conditions.push(`source = $${params.length}`)
+  }
+
+  if (excludedSources.length > 0) {
+    params.push(...excludedSources)
+    const placeholders = excludedSources.map((_, i) => `$${params.length - excludedSources.length + i + 1}`).join(', ')
+    conditions.push(`source NOT IN (${placeholders})`)
+  }
 
   const result = await pgPool.query(
     `SELECT
@@ -36,10 +51,7 @@ export async function calculateVWAPDetailed(
          0
        ) AS vwap
      FROM price_points
-     WHERE pair_key = $1
-       AND network = $2
-       AND timestamp > NOW() - ($3 || ' minutes')::interval
-       ${sourceFilter}`,
+     WHERE ${conditions.join('\n       AND ')}`,
     params
   )
   const raw = String(result.rows[0]?.vwap ?? '0')
@@ -50,9 +62,10 @@ export async function calculateVWAP(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM',
+  excludedSources: string[] = [],
 ): Promise<number> {
-  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
+  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source, excludedSources)
   return detailed.num
 }
 
@@ -211,6 +224,7 @@ export interface AggregatedPriceNumeric {
   confidence: 'high' | 'medium' | 'low' | 'unknown'
   lastTradeAgeSeconds: number | null
   stale: boolean
+  excludedVenues: string[]
 }
 
 export interface AggregatedPriceString {
@@ -229,60 +243,77 @@ export interface AggregatedPriceString {
   confidence: 'high' | 'medium' | 'low' | 'unknown'
   lastTradeAgeSeconds: number | null
   stale: boolean
+  excludedVenues: string[]
 }
 
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options: { decimalFormat: 'string' }
+  options: { decimalFormat: 'string' },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceString>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: 'number' }
+  options?: { decimalFormat?: 'number' },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceNumeric>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: DecimalFormat }
+  options?: { decimalFormat?: DecimalFormat },
+  excludedSources?: string[]
 ): Promise<AggregatedPriceNumeric | AggregatedPriceString>
 export async function getAggregatedPrice(
   pairKey: string,
   network: NetworkName,
-  options?: { decimalFormat?: DecimalFormat }
+  options?: { decimalFormat?: DecimalFormat },
+  excludedSources: string[] = []
 ): Promise<AggregatedPriceNumeric | AggregatedPriceString> {
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
-    calculateVWAPDetailed(pairKey, 1, network),
-    calculateVWAPDetailed(pairKey, 5, network),
-    calculateVWAPDetailed(pairKey, 60, network),
-    calculateVWAPDetailed(pairKey, 1440, network),
-    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX'),
+    calculateVWAPDetailed(pairKey, 1, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 5, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 60, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 1440, network, undefined, excludedSources),
+    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX', excludedSources),
     getPriceChange24hDetailed(pairKey, network),
     // AMM price: latest spot_price averaged across pools for this pair, on this
     // network only. Both halves of the lookup are network-filtered: the outer
     // scan of pool_snapshots, and the price_points subquery that decides which
     // pool ids count as this pair. Filtering only the outer scan would still let
     // a same-named pool on the other chain contribute its price.
-    pgPool.query(
-      `SELECT AVG(spot_price::numeric) AS amm_price
-       FROM (
-         SELECT DISTINCT ON (ps.pool_id) ps.spot_price
-         FROM pool_snapshots ps
-         WHERE ps.network = $2
-           AND ps.pool_id IN (
-             SELECT DISTINCT pool_id FROM price_points
-             WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
-           )
-         ORDER BY ps.pool_id, ps.timestamp DESC
-       ) latest`,
-      [pairKey, network]
-    ),
-    // Last trade timestamp
-    pgPool.query(
-      `SELECT MAX(timestamp) as last_trade FROM price_points
-       WHERE pair_key = $1 AND network = $2`,
-      [pairKey, network]
-    ),
+    //
+    // If 'AMM' is excluded we skip this sub-query by returning a null-row result
+    // rather than changing the SQL structure — the ammPrice comes out as 0.
+    excludedSources.includes('AMM')
+      ? Promise.resolve({ rows: [{ amm_price: null }] })
+      : pgPool.query(
+          `SELECT AVG(spot_price::numeric) AS amm_price
+           FROM (
+             SELECT DISTINCT ON (ps.pool_id) ps.spot_price
+             FROM pool_snapshots ps
+             WHERE ps.network = $2
+               AND ps.pool_id IN (
+                 SELECT DISTINCT pool_id FROM price_points
+                 WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
+               )
+             ORDER BY ps.pool_id, ps.timestamp DESC
+           ) latest`,
+          [pairKey, network]
+        ),
+    // Last trade timestamp — exclude stale sources so the age reflects live data only
+    excludedSources.length > 0
+      ? pgPool.query(
+          `SELECT MAX(timestamp) as last_trade FROM price_points
+           WHERE pair_key = $1 AND network = $2
+             AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`,
+          [pairKey, network, ...excludedSources]
+        )
+      : pgPool.query(
+          `SELECT MAX(timestamp) as last_trade FROM price_points
+           WHERE pair_key = $1 AND network = $2`,
+          [pairKey, network]
+        ),
   ])
 
   const volResult = await pgPool.query(
@@ -294,12 +325,15 @@ export async function getAggregatedPrice(
        WHERE pair_key = $1
          AND network = $2
          AND timestamp > NOW() - INTERVAL '24 hours'
+         ${excludedSources.length > 0
+           ? `AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`
+           : ''}
        GROUP BY source
      )
      SELECT source, vol FROM per_source
      UNION ALL
      SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
-    [pairKey, network]
+    [pairKey, network, ...excludedSources]
   )
 
   let sdexVolume24hRaw = '0'
@@ -329,8 +363,11 @@ export async function getAggregatedPrice(
      FROM price_points
      WHERE pair_key = $1
        AND network = $2
-       AND timestamp > NOW() - INTERVAL '1 hour'`,
-    [pairKey, network]
+       AND timestamp > NOW() - INTERVAL '1 hour'
+       ${excludedSources.length > 0
+         ? `AND source NOT IN (${excludedSources.map((_, i) => `$${i + 3}`).join(', ')})`
+         : ''}`,
+    [pairKey, network, ...excludedSources]
   )
 
   const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
@@ -376,6 +413,7 @@ export async function getAggregatedPrice(
       confidence,
       lastTradeAgeSeconds,
       stale,
+      excludedVenues: excludedSources,
     }
   }
 
@@ -395,6 +433,7 @@ export async function getAggregatedPrice(
     confidence,
     lastTradeAgeSeconds,
     stale,
+    excludedVenues: excludedSources,
   }
 }
 

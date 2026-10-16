@@ -275,6 +275,33 @@ export function setPoolMetricsUpdater(updater: () => void) {
   _poolMetricsUpdater = updater
 }
 
+// ── Per-venue heartbeat gauges (Issue #219) ─────────────────────────────────
+//
+// Cardinality is (venues × networks), both bounded by configuration, so these
+// are safe to add without the label-cardinality warning that applies to pair-
+// or pool-scoped labels. See docs/ingest-metrics.md for the full rationale.
+
+export const venue_last_success_timestamp = new Gauge({
+  name: 'venue_last_success_timestamp',
+  help: 'Unix timestamp of the last successful upstream read for a venue',
+  labelNames: ['venue', 'network'],
+  registers: [register]
+})
+
+export const venue_last_write_timestamp = new Gauge({
+  name: 'venue_last_write_timestamp',
+  help: 'Unix timestamp of the last row written to price_points for a venue',
+  labelNames: ['venue', 'network'],
+  registers: [register]
+})
+
+export const venue_consecutive_failures = new Gauge({
+  name: 'venue_consecutive_failures',
+  help: 'Number of consecutive failed upstream reads for a venue (reset to 0 on success)',
+  labelNames: ['venue', 'network'],
+  registers: [register]
+})
+
 export async function getMetrics() {
   if (_poolMetricsUpdater) {
     try {
