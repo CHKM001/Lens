@@ -101,6 +101,12 @@ describe('ingestPool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks resets call history but not implementations, so restore the
+    // default resolved behavior each test starts from. Without this, a prior
+    // test's mockRejectedValue could survive into the next one under shuffled
+    // ordering.
+    ;(upsertPricePoints as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    ;(dispatchPriceUpdate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   })
 
   it('stores a price point when reserves are non-zero', async () => {
@@ -144,7 +150,12 @@ describe('ingestPool', () => {
 
   it('does not throw when upsertPricePoints rejects', async () => {
     const mockFetch = vi.fn().mockResolvedValue([1000n, 200n])
-    ;(upsertPricePoints as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('DB error'))
+    // `...Once`: this rejection must not outlive this test. `beforeEach` only
+    // calls `vi.clearAllMocks()`, which resets call history but NOT mock
+    // implementations, so a persistent `mockRejectedValue` here would leak into
+    // whichever test runs next — and test order is shuffled in CI, so the
+    // victim (e.g. "stores a price point") would fail intermittently.
+    ;(upsertPricePoints as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('DB error'))
 
     await expect(ingestPool(mockPoolEntry, mockPair as any, mockFetch)).resolves.toBeUndefined()
   })
