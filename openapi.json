@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Lens API",
-    "description": "Unified Stellar price API aggregating SDEX + AMM prices.",
+    "description": "Unified Stellar price API aggregating SDEX + AMM prices.\nEvery route is served under the `/v1` version segment; the versioned path is the canonical one documented here. The same routes also answer at their unversioned paths as deprecated aliases so pre-`/v1` integrations keep working — those responses carry `Deprecation` and `Link` headers pointing at the successor. See `docs/api-versioning.md` for the retirement policy.\nCache policy: every route sends a deliberate `Cache-Control` response header. Live prices (`/price/*`) are `public, max-age=30`; aggregates (`/price/*/history`, `/price/twap/*`, `/price/vwap/*`, `/prices/history`, `/compare/*`, `/spreads/*`) are `public, max-age=60`; slower-moving views (`/volumes/*`, `/screener`, `/basket`) are `public, max-age=120`; reference data that changes rarely (`/pairs`, `/pools`, `/benchmark/*`) is `public, max-age=300`; the discovery document is `public, max-age=3600`. `/candles` for a closed historical window (its `to` at least one full interval in the past) is *probably* immutable — backfill can rewrite history — so it is `public, max-age=3600, stale-while-revalidate=86400`; the still-forming window is `public, max-age=60`. Every `public` response also sends `Vary: x-network`, because the Stellar network can come from the `x-network` header (not part of the URL cache key). Routes behind the x402 payment gate use `private` instead of `public` when x402 is configured, so a shared cache never serves paid content for free. Per-caller responses (`/usage/me`), operator routes (`/admin/*`), mutations and error responses are `no-store` and must never sit in a shared cache.\nData Quality Guarantees: see `docs/data-quality.md` for explicit SLAs and guarantees on freshness (e.g. 300s staleness bound), completeness, precision (PostgreSQL Decimal(36,18) and negotiated string serialization), and multi-venue coverage across SDEX, Stellar AMM, Soroswap, and Aquarius.",
     "version": "0.1.0",
     "license": {
       "name": "MIT",
@@ -16,7 +16,304 @@
     }
   ],
   "paths": {
-    "/status": {
+    "/v1/venues/registry": {
+      "get": {
+        "operationId": "getVenueRegistry",
+        "summary": "List registered venues and their network liveness",
+        "description": "Returns each registered venue adapter for the selected network. Liveness is based on recent price writes where available; on-demand adapters without persisted price points report unknown.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registered venues and their current liveness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "network",
+                    "venues"
+                  ],
+                  "properties": {
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
+                    },
+                    "venues": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "kind",
+                          "network",
+                          "enabled",
+                          "liveness",
+                          "lastSeenAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "orderbook",
+                              "amm",
+                              "oracle"
+                            ]
+                          },
+                          "network": {
+                            "type": "string",
+                            "enum": [
+                              "testnet",
+                              "mainnet"
+                            ]
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "liveness": {
+                            "type": "string",
+                            "enum": [
+                              "live",
+                              "stale",
+                              "disabled",
+                              "unknown"
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/venues": {
+      "get": {
+        "operationId": "getVenueVolumeShare",
+        "summary": "Venue Share of Volume",
+        "description": "Per-venue traded volume, market share (percentage of total), and period-over-period percentage change comparing the requested window against the immediately preceding window of identical duration.\nMarket shares sum to 100% within floating-point tolerance. Stale or excluded venues are explicitly listed in `excludedVenues`.\nAll queries are filtered by `network` via the `x-network` header — testnet and mainnet data are never merged into a single series.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "description": "Time window for the aggregation",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Venue volume share and market share data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VenuesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/live": {
+      "get": {
+        "operationId": "getLive",
+        "summary": "Liveness probe",
+        "description": "Reports whether this process is wedged and needs to be restarted. It checks no dependencies by design: a process that cannot reach Postgres is still healthy and should keep running, so failing liveness during a database outage would restart every instance at once. Use `/ready` to decide whether to send traffic.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Process is alive."
+          }
+        }
+      }
+    },
+    "/v1/tvl": {
+      "get": {
+        "operationId": "getTvl",
+        "summary": "Total Value Locked across Stellar DeFi venues",
+        "description": "Aggregates Total Value Locked (TVL) in USD across Stellar Classic AMM, Soroswap, and Aquarius. Reports totals, breakdown by venue, breakdown by asset with valuation sources named, and marks pools with unpriceable assets as unpriced rather than zero. Querying `?history=true` returns historical hourly TVL samples.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "description": "Return historical time series of TVL when true",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Historical lookback window in hours (default 24)",
+            "schema": {
+              "type": "string",
+              "default": 24
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Total Value Locked breakdown or historical series",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "uptimeSeconds"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "uptimeSeconds": {
+                      "type": "integer",
+                      "description": "Seconds since the process started.",
+                      "example": 3600
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ready": {
+      "get": {
+        "operationId": "getReady",
+        "summary": "Readiness probe",
+        "description": "Reports whether this process should receive traffic yet. Unhealthy until the boot sequence finishes — the server starts listening before the ingesters and background workers are running — and while Postgres is unreachable or unmigrated, or Redis is unreachable when Redis is part of readiness (`READINESS_REDIS_CHECK`, default true).\nA probe timeout is reported as `down`, and answers are cached briefly, so this is cheap to poll every few seconds. `/live` stays healthy throughout: a starting instance should be held out of rotation, not killed.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Ready to receive traffic.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters"
+          },
+          "503": {
+            "description": "Not ready. `ok` is false and `checks` says which dependency (or the boot sequence) is responsible. `/live` remains healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport",
+                  "properties": {
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
+                    },
+                    "totalTvlUsd": {
+                      "type": "number"
+                    },
+                    "unpricedPoolsCount": {
+                      "type": "integer"
+                    },
+                    "pricedPoolsCount": {
+                      "type": "integer"
+                    },
+                    "venues": {
+                      "type": "object"
+                    },
+                    "byAsset": {
+                      "type": "object"
+                    },
+                    "pools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "computedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/status": {
       "get": {
         "operationId": "getStatus",
         "summary": "Get API status and indexer state",
@@ -28,7 +325,12 @@
         ],
         "responses": {
           "200": {
-            "description": "API status",
+            "description": "API status and health diagnostics",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -37,12 +339,66 @@
                     "ok": {
                       "type": "boolean"
                     },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "healthy",
+                        "degraded",
+                        "unhealthy"
+                      ]
+                    },
                     "network": {
                       "type": "string",
                       "enum": [
                         "testnet",
                         "mainnet"
                       ]
+                    },
+                    "health": {
+                      "type": "object",
+                      "properties": {
+                        "process": {
+                          "type": "string"
+                        },
+                        "data": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "process": {
+                      "type": "object",
+                      "properties": {
+                        "uptimeSeconds": {
+                          "type": "number"
+                        },
+                        "memoryUsageMb": {
+                          "type": "number"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "lastIndexedLedger": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "lastProcessedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        },
+                        "ingestLagSeconds": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "isStale": {
+                          "type": "boolean"
+                        }
+                      }
                     },
                     "watchedPairs": {
                       "type": "array",
@@ -62,6 +418,10 @@
                     "ingestLagSeconds": {
                       "type": "integer",
                       "nullable": true
+                    },
+                    "adminConfigured": {
+                      "type": "boolean",
+                      "description": "Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false."
                     }
                   }
                 }
@@ -70,11 +430,94 @@
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "Service unhealthy or database unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "A fixed phrase, never the database driver's message. This route is public and unauthenticated, and a connection failure carries the host, the user and sometimes the whole connection string; the detail is logged server-side instead.",
+                      "example": "Database unavailable"
+                    },
+                    "pagingCondition": {
+                      "type": "string",
+                      "example": "DATABASE_DOWN"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
-    "/price/{assetA}/{assetB}": {
+    "/v1/snapshot": {
+      "get": {
+        "operationId": "getSnapshot",
+        "summary": "Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness)",
+        "description": "A single timestamped summary of one network: every venue's liveness, AMM pool reserves (TVL), 24h traded volume, the busiest pairs, stablecoin peg readings and how fresh the underlying data is. All figures are read in one consistent database statement, so `asOf` is a real instant and every age is measured from it. Missing data is reported as `null` with a reason (or an empty list), never invented — a cross-pair volume total is only returned when the pairs share one unit. Responses are cached briefly per network; `cache.ageSeconds` states the age of a served copy.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Network snapshot",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Freshness/brief-caching policy for the snapshot."
+              },
+              "X-Cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS"
+                  ]
+                },
+                "description": "Whether this response came from the short-lived cache."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Snapshot aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/price/{assetA}/{assetB}": {
       "get": {
         "operationId": "getPrice",
         "summary": "Get aggregated price for a pair",
@@ -104,11 +547,19 @@
           },
           {
             "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
           }
         ],
         "responses": {
           "200": {
             "description": "Aggregated price data",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -129,7 +580,7 @@
         }
       }
     },
-    "/price/{assetA}/{assetB}/route": {
+    "/v1/price/{assetA}/{assetB}/route": {
       "get": {
         "operationId": "getBestRoute",
         "summary": "Get best swap route for a pair and amount",
@@ -145,7 +596,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -153,7 +605,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "amount",
@@ -166,11 +619,19 @@
           },
           {
             "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
           }
         ],
         "responses": {
           "200": {
             "description": "Best route information",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -188,10 +649,59 @@
         }
       }
     },
-    "/price/{assetA}/{assetB}/history": {
+    "/v1/price/{asset}/fiat": {
+      "get": {
+        "operationId": "getFiatPrice",
+        "summary": "Convert asset price to fiat currency with NGN support (#290)",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "XLM"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "USD"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Price converted into target fiat currency",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/price/{assetA}/{assetB}/history": {
       "get": {
         "operationId": "getPriceHistory",
         "summary": "Get price history buckets",
+        "description": "Returns price aggregate buckets (1m, 5m, 1h, 24h). Prices are serialized up to 18 decimal places and volumes up to 7 decimal places matching Stellar stroop precision.",
         "security": [],
         "parameters": [
           {
@@ -200,7 +710,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -208,7 +719,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
@@ -234,11 +746,22 @@
               "default": 100,
               "maximum": 1000
             }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
           }
         ],
         "responses": {
           "200": {
             "description": "Price history",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -246,6 +769,13 @@
                   "properties": {
                     "pairKey": {
                       "type": "string"
+                    },
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
                     },
                     "window": {
                       "type": "string"
@@ -270,10 +800,11 @@
         }
       }
     },
-    "/pools": {
+    "/v1/pools": {
       "get": {
         "operationId": "getPools",
         "summary": "Get AMM liquidity pool reserves and spot prices",
+        "description": "Latest snapshot per pool for one network. Paginated with the shared keyset convention: ordered by pool_id ascending, default limit 50, maximum 200.",
         "security": [
           {
             "x402": []
@@ -282,15 +813,40 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/CursorQuery"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Out-of-range values are clamped into [1, 200].",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "List of pools",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "pools",
+                    "nextCursor",
+                    "hasMore"
+                  ],
                   "properties": {
                     "pools": {
                       "type": "array",
@@ -307,13 +863,34 @@
                             "type": "string"
                           },
                           "reserve_a": {
-                            "type": "number"
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
                           },
                           "reserve_b": {
-                            "type": "number"
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
                           },
                           "spot_price": {
-                            "type": "number"
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
                           },
                           "fee_bp": {
                             "type": "integer"
@@ -324,11 +901,21 @@
                           }
                         }
                       }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "hasMore": {
+                      "type": "boolean"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid limit or cursor"
           },
           "402": {
             "$ref": "#/components/responses/PaymentRequired"
@@ -339,10 +926,11 @@
         }
       }
     },
-    "/candles/{assetA}/{assetB}": {
+    "/v1/candles/{assetA}/{assetB}": {
       "get": {
         "operationId": "getCandles",
         "summary": "Get OHLCV candle data",
+        "description": "OHLCV candles for a pair. Buckets are aggregated with exact numeric arithmetic in the database, so a sum does not depend on the order rows were summed in; values are narrowed to JSON numbers at the edge. Paginated with the shared keyset convention: ordered by bucket start time ascending, default limit 500, maximum 5000.",
         "security": [
           {
             "x402": []
@@ -355,7 +943,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -363,7 +952,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "interval",
@@ -386,6 +976,7 @@
             "name": "from",
             "in": "query",
             "required": false,
+            "description": "Start of the time window (inclusive). Together with `to` this defines a half-open interval [from, to): samples whose timestamp is exactly `from` are included, samples whose timestamp is exactly `to` are excluded. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows.",
             "schema": {
               "type": "string",
               "format": "date-time"
@@ -395,19 +986,49 @@
             "name": "to",
             "in": "query",
             "required": false,
+            "description": "End of the time window (exclusive). Together with `from` this defines a half-open interval [from, to): samples whose timestamp is exactly `to` are excluded, samples whose timestamp is exactly `from` are included. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows.",
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CursorQuery"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Out-of-range values are clamped into [1, 5000].",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000,
+              "default": 500
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Candle data",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "pairKey",
+                    "interval",
+                    "from",
+                    "to",
+                    "candles",
+                    "nextCursor",
+                    "hasMore"
+                  ],
                   "properties": {
                     "pairKey": {
                       "type": "string"
@@ -416,10 +1037,12 @@
                       "type": "string"
                     },
                     "from": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     },
                     "to": {
-                      "type": "string"
+                      "type": "string",
+                      "format": "date-time"
                     },
                     "candles": {
                       "type": "array",
@@ -447,6 +1070,13 @@
                           }
                         }
                       }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "hasMore": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -465,11 +1095,11 @@
         }
       }
     },
-    "/prices/history": {
+    "/v1/prices/history": {
       "get": {
         "operationId": "getPriceSnapshots",
         "summary": "Get historical 1-minute price snapshots",
-        "description": "Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets. Snapshots are retained for ~30 days. Gated by x402 (matches the /price prefix).",
+        "description": "Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets, with exact numeric arithmetic in the database so a sum does not depend on row order. Snapshots are retained for ~30 days. Paginated with the shared keyset convention: ordered by bucket start time ascending, default limit 1000, maximum 10000 points. With format=csv the pagination envelope travels in the X-Next-Cursor and X-Has-More response headers; with format=json it is in the body. Gated by x402 (matches the /price prefix).",
         "security": [
           {
             "x402": []
@@ -503,6 +1133,7 @@
             "name": "from",
             "in": "query",
             "required": false,
+            "description": "Start of the time window (inclusive). Together with `to` this defines a half-open interval [from, to): samples whose timestamp is exactly `from` are included, samples whose timestamp is exactly `to` are excluded. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows.",
             "schema": {
               "type": "string",
               "format": "date-time"
@@ -512,9 +1143,39 @@
             "name": "to",
             "in": "query",
             "required": false,
+            "description": "End of the time window (exclusive). Together with `from` this defines a half-open interval [from, to): samples whose timestamp is exactly `to` are excluded, samples whose timestamp is exactly `from` are included. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows.",
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "Response encoding. `csv` returns a text/csv body holding a `ts,price,volume` table (RFC 4180 quoting, LF line endings, one trailing newline); `json` is the default.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CursorQuery"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size (number of buckets). Out-of-range values are clamped into [1, 10000].",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1000
             }
           },
           {
@@ -523,11 +1184,46 @@
         ],
         "responses": {
           "200": {
-            "description": "Historical price snapshots",
+            "description": "Historical price snapshots. When more buckets exist beyond this page, the response carries X-Next-Cursor (pass it back as ?cursor=) and X-Has-More: true.",
+            "headers": {
+              "X-Next-Cursor": {
+                "description": "Opaque cursor for the next page; absent on the last page.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Has-More": {
+                "description": "'true' when another page exists, 'false' otherwise.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              }
+            },
             "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "example": "ts,price,volume\n2025-01-01T00:00:00.000Z,1.25,500\n"
+                }
+              },
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "pair",
+                    "network",
+                    "interval",
+                    "from",
+                    "to",
+                    "count",
+                    "points",
+                    "nextCursor",
+                    "hasMore"
+                  ],
                   "properties": {
                     "pair": {
                       "type": "string"
@@ -551,7 +1247,8 @@
                       "format": "date-time"
                     },
                     "count": {
-                      "type": "integer"
+                      "type": "integer",
+                      "description": "Number of points in this page (not the total across pages)."
                     },
                     "points": {
                       "type": "array",
@@ -570,6 +1267,13 @@
                           }
                         }
                       }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "hasMore": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -588,23 +1292,49 @@
         }
       }
     },
-    "/pairs": {
+    "/v1/pairs": {
       "get": {
         "operationId": "listPairs",
         "summary": "List all active trading pairs",
+        "description": "Active trading pairs with their latest price metadata. Paginated with the shared keyset convention: ordered by pairKey ascending, default limit 50, maximum 200.",
         "security": [],
         "parameters": [
           {
             "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/CursorQuery"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Out-of-range values are clamped into [1, 200].",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "List of pairs",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "pairs",
+                    "nextCursor",
+                    "hasMore"
+                  ],
                   "properties": {
                     "pairs": {
                       "type": "array",
@@ -631,11 +1361,21 @@
                           }
                         }
                       }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "hasMore": {
+                      "type": "boolean"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid limit or cursor"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -663,7 +1403,7 @@
                   },
                   "assetB": {
                     "type": "string",
-                    "example": "USDC:GBBD47..."
+                    "example": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
                   }
                 }
               }
@@ -689,7 +1429,7 @@
         }
       }
     },
-    "/price/{assetA}/{assetB}/depth": {
+    "/v1/price/{assetA}/{assetB}/depth": {
       "get": {
         "operationId": "getDepth",
         "summary": "Get order-book depth and execution slippage for a pair",
@@ -729,11 +1469,19 @@
           },
           {
             "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
           }
         ],
         "responses": {
           "200": {
             "description": "Depth ladder",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -757,7 +1505,173 @@
         }
       }
     },
-    "/price/twap/{assetA}/{assetB}": {
+    "/v1/book/{assetA}/{assetB}": {
+      "get": {
+        "operationId": "getBook",
+        "summary": "Get the aggregated SDEX and AMM price ladder for a pair",
+        "description": "Returns asks and bids as cumulative assetA size at each price. Live SDEX levels are reported as observed; AMM levels are synthetic, fee-adjusted reserve steps. `depth` is a fractional price distance around spot (default 0.1), and `step` is the fraction of each AMM reserve used per synthetic level (default 0.01). Per-venue sample counts, observation times, ages and availability are included.",
+        "parameters": [
+          {
+            "name": "assetA",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Base asset; use XLM for native Stellar or CODE:ISSUER for a token.",
+            "example": "XLM"
+          },
+          {
+            "name": "assetB",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quote asset; token issuers must be supplied in full.",
+            "example": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+          },
+          {
+            "name": "depth",
+            "in": "query",
+            "required": false,
+            "description": "Maximum fractional distance from spot; valid range 0 to 0.5.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.5,
+              "default": 0.1
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "required": false,
+            "description": "AMM input-reserve fraction per synthetic rung; valid range 0.001 to 0.1.",
+            "schema": {
+              "type": "number",
+              "minimum": 0.001,
+              "maximum": 0.1,
+              "default": 0.01
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Book levels with per-venue provenance; unavailable venues are identified in the response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid asset, depth, or step parameter"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "No source could be read; response provenance identifies failed venues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/impact/{assetA}/{assetB}": {
+      "get": {
+        "operationId": "getImpact",
+        "summary": "Get an adaptive slippage impact curve for a pair",
+        "description": "Returns slippage at standard trade sizes, an additional liquidity-sized point, and the size at which configured slippage thresholds are crossed. A thin pair returns `insufficient_liquidity` instead of a fabricated 100% slippage result.",
+        "security": [
+          {
+            "x402": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assetA",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "XLM"
+          },
+          {
+            "name": "assetB",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USDC"
+          },
+          {
+            "name": "thresholds",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated positive slippage percentages. Defaults to 1,5,10.",
+            "schema": {
+              "type": "string",
+              "default": "1,5,10"
+            }
+          },
+          {
+            "name": "liquidityFraction",
+            "in": "query",
+            "required": false,
+            "description": "Usable fraction of the A-side reserve, between 0 and 1.",
+            "schema": {
+              "type": "number",
+              "default": 0.5
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Adaptive impact curve",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid threshold or liquidity settings"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "404": {
+            "description": "Pair or AMM liquidity not found"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/price/twap/{assetA}/{assetB}": {
       "get": {
         "operationId": "getTwap",
         "summary": "Get a manipulation-resistant time-weighted average price",
@@ -773,7 +1687,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -781,7 +1696,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
@@ -819,11 +1735,22 @@
               ],
               "default": "iqr"
             }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
           }
         ],
         "responses": {
           "200": {
             "description": "TWAP result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -847,7 +1774,7 @@
         }
       }
     },
-    "/price/vwap/{assetA}/{assetB}": {
+    "/v1/price/vwap/{assetA}/{assetB}": {
       "get": {
         "operationId": "getVwap",
         "summary": "Get a volume-weighted average price",
@@ -863,7 +1790,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -871,7 +1799,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
@@ -910,11 +1839,22 @@
               ],
               "default": "iqr"
             }
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
           "200": {
             "description": "VWAP result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -938,11 +1878,11 @@
         }
       }
     },
-    "/volumes/{asset}": {
+    "/v1/volumes/{asset}": {
       "get": {
         "operationId": "getVolumes",
         "summary": "Get cross-venue traded volume for an asset",
-        "description": "Sums traded volume for `asset` across every pair and venue it appears in, measured in the asset's own units, with a per-venue breakdown.",
+        "description": "Sums traded volume for `asset` across every pair and venue it appears in, measured in the asset's own units, with a per-venue breakdown and trade-size statistics. `volumeConcentration` is the Herfindahl-Hirschman Index (HHI), calculated as the sum of squared per-trade volume shares across the selected venues and window; it ranges from 0 to 1, with 1 meaning all volume came from one trade. A missing statistic is `null` when there are no trades or no positive volume. Provenance reports the venues, positive-volume trade count, observed sample count, most recent trade timestamp and its age at `endTime`. Venues are classified as primary markets or aggregators in the registry. `totals.net` / `netVolume` sum primary markets only, while `totals.gross` / `grossVolume` include aggregator venues (e.g. Aquarius) that re-report trades settled elsewhere. `totalVolume` and `tradeCount` report the net figures; the trade-size statistics and provenance cover every venue (gross).",
         "security": [],
         "parameters": [
           {
@@ -975,6 +1915,11 @@
         "responses": {
           "200": {
             "description": "Aggregated volume",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -990,12 +1935,19 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Volume aggregation failed"
+            "description": "Volume aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/spreads/{asset}": {
+    "/v1/spreads/{asset}": {
       "get": {
         "operationId": "getSpreads",
         "summary": "Get the tightest per-venue bid/ask spread for an asset",
@@ -1033,6 +1985,11 @@
         "responses": {
           "200": {
             "description": "Per-venue spreads",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1048,15 +2005,261 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Spread aggregation failed"
+            "description": "Spread aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/compare/{asset}": {
+    "/v1/rates/{asset}": {
+      "get": {
+        "operationId": "getLendingRates",
+        "summary": "Get supply and borrow rates for an asset across lending venues",
+        "description": "Answers what `asset` earns when supplied and costs to borrow at every lending venue Lens ingests, one entry per venue sorted best-first (highest supply rate first). Each entry names the venue, the source it was read from and the specific pool/market it came from, so a rate is always attributable and venues are never silently averaged.\nAn asset with no lending market returns an empty `venues` list with a 200, not a 404.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USDC"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-venue lending rates, best-first (empty when no market)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid network"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Rate lookup failed"
+          }
+        }
+      }
+    },
+    "/v1/dispersion/{assetA}/{assetB}": {
+      "get": {
+        "operationId": "getPairDispersion",
+        "summary": "Get venue price dispersion and outlier attribution for a pair",
+        "description": "Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "assetA",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Base asset code or CODE:ISSUER",
+            "example": "XLM"
+          },
+          {
+            "name": "assetB",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quote asset code or CODE:ISSUER",
+            "example": "USDC"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Start timestamp (ISO-8601)"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "End timestamp (ISO-8601)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 500
+            },
+            "description": "Max number of history records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dispersion history and latest outlier attribution",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pairKey": {
+                      "type": "string"
+                    },
+                    "network": {
+                      "type": "string"
+                    },
+                    "latest": {
+                      "type": "object",
+                      "nullable": true
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "history": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Dispersion query failed"
+          }
+        }
+      }
+    },
+    "/v1/dispersion": {
+      "get": {
+        "operationId": "listDispersion",
+        "summary": "List cross-venue dispersion across watched pairs",
+        "description": "Queries recent cross-venue dispersion reconciliation records across all pairs or filtered by a specific pair.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "pair",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional pair key filter (e.g. XLM/USDC)"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of dispersion reconciliation records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "network": {
+                      "type": "string"
+                    },
+                    "pair": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "history": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Dispersion query failed"
+          }
+        }
+      }
+    },
+    "/v1/compare/{asset}": {
       "get": {
         "operationId": "compareAsset",
-        "summary": "Compare Lens and Reflector oracle prices for an asset",
+        "summary": "Compare Lens prices with every configured external oracle",
+        "description": "Returns 200 even when both Lens and all configured oracles have no data for the asset. The `status` field distinguishes \"no_data\" from \"aligned\", \"minor_deviation\", \"major_deviation\" and \"partial\" (one source only). The response includes both the legacy `reflector` field for backward compatibility and an `oracles` array listing every configured source.",
         "security": [],
         "parameters": [
           {
@@ -1067,11 +2270,19 @@
               "type": "string"
             },
             "example": "XLM"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
           "200": {
-            "description": "Price comparison",
+            "description": "Price comparison (includes status:\"no_data\" when both sources are null)",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1080,16 +2291,13 @@
               }
             }
           },
-          "404": {
-            "description": "No price data found for the asset"
-          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
     },
-    "/screener": {
+    "/v1/screener": {
       "get": {
         "operationId": "screenPairs",
         "summary": "Screen pairs by volume, change, liquidity and price",
@@ -1139,6 +2347,7 @@
             "name": "liquidity",
             "in": "query",
             "required": false,
+            "description": "Filter for pairs with total AMM pool liquidity greater than or equal to this value. Liquidity is defined as the sum across all active AMM pools for the pair of (reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at the latest snapshot spot price.",
             "schema": {
               "type": "number"
             }
@@ -1172,18 +2381,13 @@
             }
           },
           {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "description": "Opaque cursor returned as `nextCursor` by the previous page.",
-            "schema": {
-              "type": "string"
-            }
+            "$ref": "#/components/parameters/CursorQuery"
           },
           {
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size. Out-of-range values are clamped into [1, 100].",
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -1198,6 +2402,11 @@
         "responses": {
           "200": {
             "description": "Screened pairs",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1218,7 +2427,55 @@
         }
       }
     },
-    "/benchmark/{asset}": {
+    "/v1/movers": {
+      "get": {
+        "operationId": "getMovers",
+        "summary": "Get biggest gainers, biggest losers, and volume movers",
+        "description": "Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "24h",
+                "7d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Market movers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoversResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid window or network"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/v1/benchmark/{asset}": {
       "get": {
         "operationId": "getBenchmark",
         "summary": "Get peg-deviation statistics for an asset against a target",
@@ -1246,6 +2503,11 @@
         "responses": {
           "200": {
             "description": "Benchmark statistics",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1261,15 +2523,23 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Benchmark computation failed"
+            "description": "Benchmark computation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/basket": {
+    "/v1/basket": {
       "get": {
         "operationId": "getBasket",
         "summary": "Compute the weighted price of a basket of assets",
+        "description": "Returns 200 even when one or more assets have no price data. The response body will contain an `error` field listing the missing assets and `reason: \"missing_price_data\"` rather than computing a partial basket price. A 404 would imply the assets themselves are invalid.",
         "security": [],
         "parameters": [
           {
@@ -1311,7 +2581,12 @@
         ],
         "responses": {
           "200": {
-            "description": "Basket price",
+            "description": "Basket price or error with reason when price data is missing",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1323,16 +2598,84 @@
           "400": {
             "description": "Missing assets or mismatched/invalid weights"
           },
-          "404": {
-            "description": "No price data for one or more assets"
-          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
     },
-    "/discovery/resources": {
+    "/v1/correlation": {
+      "get": {
+        "operationId": "getCorrelation",
+        "summary": "Compute price correlation matrix across a basket of assets over a window",
+        "security": [],
+        "parameters": [
+          {
+            "name": "assets",
+            "in": "query",
+            "required": true,
+            "description": "Comma-separated or repeated asset codes (at least two)",
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "example": "XLM,USDC"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Lookback window (5m, 15m, 1h, 24h, 7d, 30d). Defaults to 24h.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "5m",
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Correlation matrix and pair provenance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrelationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Correlation computation failed"
+          }
+        }
+      }
+    },
+    "/v1/discovery/resources": {
       "get": {
         "operationId": "listDiscoveryResources",
         "summary": "Browse the x402 Bazaar catalog of discoverable resources",
@@ -1401,6 +2744,11 @@
         "responses": {
           "200": {
             "description": "Paginated catalog page",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1415,7 +2763,56 @@
         }
       }
     },
-    "/webhooks": {
+    "/v1/discovery/search": {
+      "get": {
+        "operationId": "searchDiscoveryResources",
+        "summary": "Natural language search with ranking and quality evaluation for discoverable resources",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "USDC"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results with relevance ranking and metadata quality",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/webhooks": {
       "post": {
         "operationId": "createWebhook",
         "summary": "Subscribe to a price-threshold webhook",
@@ -1483,7 +2880,7 @@
         }
       }
     },
-    "/webhooks/{id}": {
+    "/v1/webhooks/{id}": {
       "delete": {
         "operationId": "deleteWebhook",
         "summary": "Delete a webhook subscription",
@@ -1508,7 +2905,7 @@
         }
       }
     },
-    "/usage/me": {
+    "/v1/usage/me": {
       "get": {
         "operationId": "getMyUsage",
         "summary": "Get usage and quota for the calling API key",
@@ -1520,6 +2917,11 @@
         "responses": {
           "200": {
             "description": "Usage summary for the authenticated key",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1537,7 +2939,41 @@
         }
       }
     },
-    "/supported": {
+    "/v1/usage": {
+      "get": {
+        "operationId": "getCallerUsage",
+        "summary": "Get usage and quota for the calling API key (alias for /usage/me)",
+        "security": [
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage summary for the authenticated key",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/supported": {
       "get": {
         "operationId": "getSupported",
         "summary": "List the payment kinds and extensions this facilitator supports",
@@ -1545,6 +2981,11 @@
         "responses": {
           "200": {
             "description": "Supported payment kinds and extensions",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1556,7 +2997,7 @@
         }
       }
     },
-    "/verify": {
+    "/v1/verify": {
       "post": {
         "operationId": "verifyPayment",
         "summary": "Verify an x402 payment payload",
@@ -1605,7 +3046,7 @@
         }
       }
     },
-    "/settle": {
+    "/v1/settle": {
       "post": {
         "operationId": "settlePayment",
         "summary": "Settle an x402 payment (idempotent)",
@@ -1645,7 +3086,7 @@
         }
       }
     },
-    "/graphql": {
+    "/v1/graphql": {
       "get": {
         "operationId": "graphqlGet",
         "summary": "Execute a GraphQL query over HTTP GET",
@@ -1680,6 +3121,11 @@
         "responses": {
           "200": {
             "description": "GraphQL result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1738,6 +3184,75 @@
           }
         }
       }
+    },
+    "/v1/rates": {
+      "get": {
+        "operationId": "getLendingRates",
+        "summary": "Query latest lending and borrow rates across pools",
+        "description": "Returns the latest supply and borrow rates, utilisation, and reserves for lending markets.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "description": "Filter by asset symbol (e.g. USDC, XLM)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "poolId",
+            "in": "query",
+            "required": false,
+            "description": "Filter by pool contract ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Stellar network to query (testnet or mainnet)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "testnet",
+                "mainnet"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of rate records to return",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest lending rates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LendingRatesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1760,6 +3275,20 @@
       }
     },
     "parameters": {
+      "DecimalFormatHeader": {
+        "name": "X-Decimal-Format",
+        "in": "header",
+        "required": false,
+        "description": "Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "number",
+            "string"
+          ],
+          "default": "number"
+        }
+      },
       "NetworkQuery": {
         "name": "network",
         "in": "query",
@@ -1772,6 +3301,15 @@
             "mainnet"
           ],
           "default": "testnet"
+        }
+      },
+      "CursorQuery": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400.",
+        "schema": {
+          "type": "string"
         }
       }
     },
@@ -1854,9 +3392,374 @@
             }
           }
         }
+      },
+      "InternalServerError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/InternalErrorResponse"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request parameters",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "headers": {
+      "CacheControl": {
+        "description": "Per-route cache policy (see \"Cache policy\" in the API description). Every route sends a deliberate `Cache-Control`: live prices `public, max-age=30`; aggregates `public, max-age=60`; `/pairs` and `/pools` `public, max-age=300`; closed candle windows `public, max-age=86400`; per-caller, operator and error responses `no-store`.",
+        "schema": {
+          "type": "string",
+          "example": "public, max-age=300"
+        }
       }
     },
     "schemas": {
+      "LendingRateEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "venue",
+          "source",
+          "network",
+          "poolId",
+          "asset",
+          "supplyApy",
+          "borrowApy",
+          "timestamp"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "venue": {
+            "type": "string",
+            "example": "blend"
+          },
+          "source": {
+            "type": "string",
+            "example": "blend"
+          },
+          "network": {
+            "type": "string",
+            "example": "mainnet"
+          },
+          "poolId": {
+            "type": "string"
+          },
+          "poolName": {
+            "type": "string",
+            "nullable": true
+          },
+          "asset": {
+            "type": "string",
+            "example": "USDC"
+          },
+          "assetAddress": {
+            "type": "string",
+            "nullable": true
+          },
+          "supplyApy": {
+            "type": "number"
+          },
+          "borrowApy": {
+            "type": "number"
+          },
+          "supplyApr": {
+            "type": "number",
+            "nullable": true
+          },
+          "borrowApr": {
+            "type": "number",
+            "nullable": true
+          },
+          "utilization": {
+            "type": "number",
+            "nullable": true,
+            "description": "Borrowed / supplied as a fraction. Null for venues that publish rates only."
+          },
+          "totalSupply": {
+            "type": "number",
+            "nullable": true
+          },
+          "totalBorrowed": {
+            "type": "number",
+            "nullable": true
+          },
+          "reserves": {
+            "type": "number",
+            "nullable": true
+          },
+          "ledger": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "LendingRatesResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "rates"
+        ],
+        "properties": {
+          "network": {
+            "type": "string"
+          },
+          "rates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LendingRateEntry"
+            }
+          }
+        }
+      },
+      "InternalErrorResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "correlationId"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "internal_error"
+            ],
+            "example": "internal_error"
+          },
+          "message": {
+            "type": "string",
+            "example": "An internal server error occurred."
+          },
+          "correlationId": {
+            "type": "string",
+            "example": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+          }
+        }
+      },
+      "DependencyCheck": {
+        "type": "object",
+        "description": "Result of one dependency probe. `reason` is a fixed phrase, never the raw error: connection errors carry the host and port and this is a public endpoint.",
+        "required": [
+          "status",
+          "latencyMs",
+          "reason"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "skipped"
+            ]
+          },
+          "latencyMs": {
+            "type": "integer",
+            "description": "Round-trip time of the probe."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "example": "unreachable or not migrated"
+          }
+        }
+      },
+      "VenuesResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "window",
+          "excludedVenues",
+          "venues",
+          "totalVolume",
+          "marketShares",
+          "periodOverPeriodPctChange"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d",
+              "30d"
+            ]
+          },
+          "excludedVenues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "venue",
+                "baseVolume",
+                "counterVolume",
+                "samples",
+                "pairs",
+                "marketShare",
+                "periodOverPeriodPctChange",
+                "lastUpdated",
+                "ageSeconds"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "venue": {
+                  "type": "string"
+                },
+                "baseVolume": {
+                  "type": "number"
+                },
+                "counterVolume": {
+                  "type": "number"
+                },
+                "samples": {
+                  "type": "integer"
+                },
+                "pairs": {
+                  "type": "integer"
+                },
+                "marketShare": {
+                  "type": "number"
+                },
+                "periodOverPeriodPctChange": {
+                  "type": "number"
+                },
+                "lastUpdated": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ageSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "totalVolume": {
+            "type": "object",
+            "required": [
+              "value",
+              "unit",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "marketShares": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "total": {
+                "type": "number"
+              },
+              "variance": {
+                "type": "number"
+              }
+            }
+          },
+          "periodOverPeriodPctChange": {
+            "type": "number"
+          }
+        }
+      },
+      "ReadinessReport": {
+        "type": "object",
+        "description": "Readiness of one instance. Identical on 200 and 503; `ok` and the HTTP status together say whether traffic should be routed here.",
+        "required": [
+          "ok",
+          "booted",
+          "checks",
+          "checkedAt"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "True only when boot finished and every checked dependency is up."
+          },
+          "booted": {
+            "type": "boolean",
+            "description": "False while the boot sequence is still running."
+          },
+          "checks": {
+            "type": "object",
+            "required": [
+              "postgres",
+              "redis"
+            ],
+            "properties": {
+              "postgres": {
+                "$ref": "#/components/schemas/DependencyCheck"
+              },
+              "redis": {
+                "$ref": "#/components/schemas/DependencyCheck"
+              }
+            }
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the underlying probes ran (answers may be briefly cached)."
+          }
+        }
+      },
       "Asset": {
         "type": "object",
         "properties": {
@@ -1866,6 +3769,448 @@
           "issuer": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "SnapshotAsset": {
+        "type": "object",
+        "description": "A Stellar asset. The issuer is kept because a code such as USDC names a different asset per issuer; `issuer` is null only for the native asset.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotVenue": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "orderbook",
+              "amm",
+              "unknown"
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "reporting",
+              "stale",
+              "silent",
+              "disabled"
+            ]
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "pairs24h": {
+            "type": "integer"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotPool": {
+        "type": "object",
+        "properties": {
+          "poolId": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "assetA": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "assetB": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "reserveA": {
+            "type": "number",
+            "nullable": true
+          },
+          "reserveB": {
+            "type": "number",
+            "nullable": true
+          },
+          "spotPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "feeBp": {
+            "type": "integer",
+            "nullable": true
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotVolume": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "nullable": true
+          },
+          "unit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ],
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotTopPair": {
+        "type": "object",
+        "properties": {
+          "pairKey": {
+            "type": "string"
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "Whether the pair is in this network's watched-pair config. When false the asset order (and therefore the price direction) is taken from the alphabetically-sorted pair key."
+          },
+          "assetA": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "assetB": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "price": {
+            "type": "number",
+            "nullable": true,
+            "description": "Stored as assetB-per-assetA in the config's order."
+          },
+          "baseVolume24h": {
+            "type": "number"
+          },
+          "counterVolume24h": {
+            "type": "number"
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotPeg": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "target": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string"
+          },
+          "quote": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "price": {
+            "type": "number",
+            "nullable": true,
+            "description": "The pegged asset's price in its quote asset."
+          },
+          "deviationBp": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "on_peg",
+              "off_peg",
+              "no_reference",
+              "no_data"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotResponse": {
+        "type": "object",
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The single instant (from one database statement) every window and age is measured from."
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h"
+            ]
+          },
+          "cache": {
+            "type": "object",
+            "properties": {
+              "ttlSeconds": {
+                "type": "integer"
+              },
+              "maxAgeSeconds": {
+                "type": "integer"
+              },
+              "hit": {
+                "type": "boolean"
+              },
+              "storedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              }
+            }
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotVenue"
+            }
+          },
+          "tvl": {
+            "type": "object",
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "poolCount": {
+                "type": "integer"
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "lastUpdated": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "byAsset": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "$ref": "#/components/schemas/SnapshotAsset"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "pools": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "pools": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotPool"
+                }
+              }
+            }
+          },
+          "volume24h": {
+            "type": "object",
+            "properties": {
+              "window": {
+                "type": "string",
+                "enum": [
+                  "24h"
+                ]
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "byVenue": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "venue": {
+                      "type": "string"
+                    },
+                    "baseVolume": {
+                      "type": "number"
+                    },
+                    "counterVolume": {
+                      "type": "number"
+                    },
+                    "samples": {
+                      "type": "integer"
+                    },
+                    "pairs": {
+                      "type": "integer"
+                    },
+                    "lastUpdated": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "ageSeconds": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  }
+                }
+              },
+              "total": {
+                "$ref": "#/components/schemas/SnapshotVolume"
+              }
+            }
+          },
+          "topPairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotTopPair"
+            }
+          },
+          "pegs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotPeg"
+            }
+          },
+          "freshness": {
+            "type": "object",
+            "properties": {
+              "asOf": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "windowStart": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "windowEnd": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "lastUpdated": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              },
+              "staleAfterSeconds": {
+                "type": "integer"
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "venuesReporting": {
+                "type": "integer"
+              },
+              "venuesExpected": {
+                "type": "integer"
+              },
+              "venuesSilent": {
+                "type": "integer"
+              }
+            }
           }
         }
       },
@@ -1882,13 +4227,34 @@
             "type": "string"
           },
           "price": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "sdexPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "ammPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "bestRoute": {
             "type": "string",
@@ -1900,28 +4266,84 @@
             ]
           },
           "volume24h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "sdexVolume24h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "ammVolume24h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "vwap1m": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "vwap5m": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "vwap1h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "vwap24h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "priceChange24h": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "lastUpdated": {
             "type": "string",
@@ -1945,8 +4367,174 @@
           }
         }
       },
+      "RouteHop": {
+        "type": "object",
+        "required": [
+          "assetIn",
+          "assetOut",
+          "venue",
+          "inputAmount",
+          "outputAmount",
+          "price",
+          "spotPrice",
+          "slippagePct"
+        ],
+        "properties": {
+          "assetIn": {
+            "$ref": "#/components/schemas/Asset"
+          },
+          "assetOut": {
+            "$ref": "#/components/schemas/Asset"
+          },
+          "venue": {
+            "type": "string",
+            "enum": [
+              "SDEX",
+              "AMM"
+            ]
+          },
+          "poolId": {
+            "type": "string"
+          },
+          "inputAmount": {
+            "type": "number"
+          },
+          "outputAmount": {
+            "type": "number"
+          },
+          "price": {
+            "type": "number"
+          },
+          "spotPrice": {
+            "type": "number"
+          },
+          "slippagePct": {
+            "type": "number"
+          }
+        }
+      },
+      "RouteOption": {
+        "type": "object",
+        "required": [
+          "hops",
+          "hopCount",
+          "estimatedOutput",
+          "effectivePrice",
+          "slippagePct"
+        ],
+        "properties": {
+          "hops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteHop"
+            }
+          },
+          "hopCount": {
+            "type": "integer"
+          },
+          "estimatedOutput": {
+            "type": "number"
+          },
+          "effectivePrice": {
+            "type": "number"
+          },
+          "slippagePct": {
+            "type": "number"
+          }
+        }
+      },
+      "RouteComparison": {
+        "type": "object",
+        "required": [
+          "direct",
+          "multiHop"
+        ],
+        "properties": {
+          "direct": {
+            "type": "object",
+            "required": [
+              "route",
+              "sdexPrice",
+              "ammPrice",
+              "estimatedOutput",
+              "slippagePct"
+            ],
+            "properties": {
+              "route": {
+                "type": "string",
+                "enum": [
+                  "SDEX",
+                  "AMM",
+                  "SPLIT",
+                  "UNKNOWN"
+                ]
+              },
+              "sdexPrice": {
+                "type": "number"
+              },
+              "ammPrice": {
+                "type": "number"
+              },
+              "estimatedOutput": {
+                "type": "number"
+              },
+              "slippagePct": {
+                "type": "number"
+              }
+            }
+          },
+          "multiHop": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RouteOption"
+              }
+            ]
+          }
+        }
+      },
+      "RouteProvenance": {
+        "type": "object",
+        "required": [
+          "sampledAt",
+          "network",
+          "venuesQueried",
+          "sampleCount",
+          "freshnessSeconds"
+        ],
+        "properties": {
+          "sampledAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "network": {
+            "type": "string"
+          },
+          "venuesQueried": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sampleCount": {
+            "type": "integer"
+          },
+          "freshnessSeconds": {
+            "type": "number",
+            "nullable": true
+          }
+        }
+      },
       "RouteInfo": {
         "type": "object",
+        "required": [
+          "route",
+          "sdexPrice",
+          "ammPrice",
+          "estimatedOutput",
+          "slippagePct",
+          "recommendation"
+        ],
         "properties": {
           "route": {
             "type": "string",
@@ -1954,23 +4542,71 @@
               "SDEX",
               "AMM",
               "SPLIT",
+              "MULTI_HOP",
               "UNKNOWN"
             ]
           },
           "sdexPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "ammPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "estimatedOutput": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "slippagePct": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "recommendation": {
             "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "hops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteHop"
+            }
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/RouteComparison"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/RouteProvenance"
           }
         }
       },
@@ -1985,36 +4621,92 @@
             "type": "string"
           },
           "vwap": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "sdexVwap": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "ammVwap": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "volume": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "tradeCount": {
             "type": "integer"
           },
           "open": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "close": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "high": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "low": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           }
         }
@@ -2028,10 +4720,24 @@
         "additionalProperties": false,
         "properties": {
           "price": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "size": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           }
         }
       },
@@ -2060,13 +4766,34 @@
             "type": "string"
           },
           "spotPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "executionPrice": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "slippagePct": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "asks": {
             "type": "array",
@@ -2090,12 +4817,320 @@
           }
         }
       },
+      "BookLevel": {
+        "type": "object",
+        "required": [
+          "price",
+          "size",
+          "cumulativeSize",
+          "venues",
+          "synthetic",
+          "sampleCount"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Quote-asset units per base-asset unit."
+          },
+          "size": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Base-asset size at this level."
+          },
+          "cumulativeSize": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Base-asset size from the best price through this level, independently for asks and bids."
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SDEX for order-book levels or AMM:{poolId} for each contributing pool."
+          },
+          "synthetic": {
+            "type": "boolean",
+            "description": "True for reserve-derived AMM steps; false for observed SDEX book levels."
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "Number of source levels combined at this price."
+          }
+        }
+      },
+      "BookSource": {
+        "type": "object",
+        "required": [
+          "venue",
+          "status",
+          "sampleCount",
+          "observedAt",
+          "dataAgeSeconds",
+          "truncated"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "venue": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "no_liquidity",
+              "unavailable"
+            ]
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "SDEX book levels returned, or latest AMM pool snapshots used."
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "dataAgeSeconds": {
+            "type": "number",
+            "nullable": true
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the SDEX response reached the 200-level per-side request limit."
+          }
+        }
+      },
+      "BookResponse": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "pairKey",
+          "network",
+          "spotPrice",
+          "spotSource",
+          "depth",
+          "step",
+          "status",
+          "asks",
+          "bids",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "spotPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "spotSource": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "SDEX_MID",
+              "SDEX_ASK",
+              "SDEX_BID",
+              "AMM_RESERVES",
+              null
+            ]
+          },
+          "depth": {
+            "type": "number"
+          },
+          "step": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "no_liquidity",
+              "no_levels_in_range",
+              "unavailable"
+            ]
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "sampledAt",
+              "sampleCount",
+              "venues"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "sampledAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BookSource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ImpactResponse": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "pairKey",
+          "status",
+          "spotPrice",
+          "availableLiquidity",
+          "smallestSize",
+          "ladder",
+          "thresholds",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "insufficient_liquidity"
+            ]
+          },
+          "spotPrice": {
+            "type": "number"
+          },
+          "availableLiquidity": {
+            "type": "number"
+          },
+          "smallestSize": {
+            "type": "number"
+          },
+          "ladder": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "size",
+                "output",
+                "executionPrice",
+                "slippagePct"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "executionPrice": {
+                  "type": "number"
+                },
+                "slippagePct": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "thresholds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "thresholdPct",
+                "crossed",
+                "size"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "thresholdPct": {
+                  "type": "number"
+                },
+                "crossed": {
+                  "type": "boolean"
+                },
+                "size": {
+                  "type": "number",
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "AMM"
+            ]
+          }
+        }
+      },
       "TwapResponse": {
         "type": "object",
         "required": [
           "assetA",
           "assetB",
           "pairKey",
+          "network",
           "twap",
           "windowMinutes",
           "sampleIntervalSeconds",
@@ -2116,8 +5151,22 @@
           "pairKey": {
             "type": "string"
           },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
           "twap": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "windowMinutes": {
             "type": "integer"
@@ -2154,6 +5203,7 @@
           "assetA",
           "assetB",
           "pairKey",
+          "network",
           "vwap",
           "windowMinutes",
           "source",
@@ -2175,8 +5225,22 @@
           "pairKey": {
             "type": "string"
           },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
           "vwap": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "windowMinutes": {
             "type": "integer"
@@ -2196,7 +5260,14 @@
             "type": "integer"
           },
           "volumeTotal": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "outlierRejected": {
             "type": "integer"
@@ -2210,22 +5281,59 @@
           }
         }
       },
+      "VolumeTotals": {
+        "type": "object",
+        "required": [
+          "net",
+          "gross"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "net": {
+            "type": "number",
+            "description": "Volume summed across primary markets only (excluding aggregator double-counts)"
+          },
+          "gross": {
+            "type": "number",
+            "description": "Gross volume summed across all venues including aggregators"
+          }
+        }
+      },
       "VolumeResponse": {
         "type": "object",
         "required": [
           "asset",
+          "network",
           "window",
           "startTime",
           "endTime",
           "totalVolume",
+          "netVolume",
+          "grossVolume",
+          "totals",
           "byVenue",
           "venues",
-          "tradeCount"
+          "tradeCount",
+          "netTradeCount",
+          "grossTradeCount",
+          "medianTradeSize",
+          "topTradeVolumeShare",
+          "volumeConcentration",
+          "concentrationMeasure",
+          "status",
+          "provenance"
         ],
         "additionalProperties": false,
         "properties": {
           "asset": {
             "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
           },
           "window": {
             "type": "string",
@@ -2243,8 +5351,20 @@
             "type": "string",
             "format": "date-time"
           },
+          "totals": {
+            "$ref": "#/components/schemas/VolumeTotals"
+          },
+          "netVolume": {
+            "type": "number",
+            "description": "Volume summed across primary markets only (excluding aggregator double-counts)"
+          },
+          "grossVolume": {
+            "type": "number",
+            "description": "Gross volume summed across all venues including aggregators"
+          },
           "totalVolume": {
-            "type": "number"
+            "type": "number",
+            "description": "Primary volume total (alias for netVolume for backward compatibility)"
           },
           "byVenue": {
             "type": "object",
@@ -2259,7 +5379,81 @@
             }
           },
           "tradeCount": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Number of positive-volume samples from primary markets (equals netTradeCount)."
+          },
+          "netTradeCount": {
+            "type": "integer",
+            "description": "Number of positive-volume samples from primary markets."
+          },
+          "grossTradeCount": {
+            "type": "integer",
+            "description": "Number of positive-volume samples across all venues, including aggregators."
+          },
+          "medianTradeSize": {
+            "type": "number",
+            "nullable": true,
+            "description": "Median per-sample volume measured in the requested asset's units."
+          },
+          "topTradeVolumeShare": {
+            "type": "number",
+            "nullable": true,
+            "description": "Largest single sample's share of total volume, from 0 to 1."
+          },
+          "volumeConcentration": {
+            "type": "number",
+            "nullable": true,
+            "description": "HHI, the sum of squared per-sample volume shares; 1 is fully concentrated in one sample."
+          },
+          "concentrationMeasure": {
+            "type": "string",
+            "enum": [
+              "hhi"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "no_trades",
+              "no_positive_volume"
+            ]
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "venues",
+              "sampleCount",
+              "observedSampleCount",
+              "latestTradeAt",
+              "dataAgeSeconds"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sampleCount": {
+                "type": "integer",
+                "description": "Positive-volume samples used to calculate trade-size statistics."
+              },
+              "observedSampleCount": {
+                "type": "integer",
+                "description": "All matching price point samples observed in the window, including zero-volume samples."
+              },
+              "latestTradeAt": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "dataAgeSeconds": {
+                "type": "integer",
+                "nullable": true
+              }
+            }
           }
         }
       },
@@ -2360,20 +5554,124 @@
           }
         }
       },
-      "CompareResponse": {
+      "RateVenue": {
+        "type": "object",
+        "required": [
+          "venue",
+          "source",
+          "pool",
+          "poolName",
+          "supplyRate",
+          "borrowRate",
+          "ledger",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "venue": {
+            "type": "string",
+            "description": "Lending venue the rate was read from (e.g. \"blend\")."
+          },
+          "source": {
+            "type": "string",
+            "description": "Distinct source tag stored on the row."
+          },
+          "pool": {
+            "type": "string",
+            "description": "Pool / market contract id the rate came from, never elided."
+          },
+          "poolName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-readable pool name, when the venue publishes one."
+          },
+          "supplyRate": {
+            "type": "number",
+            "description": "APY earned by supplying the asset, as a fraction (0.05 == 5%)."
+          },
+          "borrowRate": {
+            "type": "number",
+            "description": "APY charged to borrow the asset, as a fraction (0.07 == 7%)."
+          },
+          "ledger": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RatesResponse": {
         "type": "object",
         "required": [
           "asset",
-          "lens",
-          "reflector",
-          "deviationPct",
-          "status",
-          "fetchedAt"
+          "network",
+          "venues",
+          "best",
+          "count",
+          "computedAt"
         ],
         "additionalProperties": false,
         "properties": {
           "asset": {
             "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "venues": {
+            "type": "array",
+            "description": "One entry per venue, sorted best-first (highest supply rate). Empty when no venue lists the asset.",
+            "items": {
+              "$ref": "#/components/schemas/RateVenue"
+            }
+          },
+          "best": {
+            "nullable": true,
+            "description": "The highest-supply venue, or null when nothing lends the asset.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RateVenue"
+              }
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "computedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CompareResponse": {
+        "type": "object",
+        "required": [
+          "asset",
+          "network",
+          "lens",
+          "reflector",
+          "deviationPct",
+          "status",
+          "fetchedAt",
+          "oracles"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
           },
           "lens": {
             "type": "number",
@@ -2399,6 +5697,54 @@
           "fetchedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "oracles": {
+            "type": "array",
+            "description": "One result per configured adapter; unavailable sources remain present with a status.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "price",
+                "timestamp",
+                "deviationPct",
+                "status",
+                "ageSeconds"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "price": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true
+                },
+                "deviationPct": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "status": {
+                  "type": "string",
+                  "description": "unreachable means the adapter failed; empty means it is configured but returned no quote.",
+                  "enum": [
+                    "available",
+                    "unreachable",
+                    "empty",
+                    "not_configured"
+                  ]
+                },
+                "ageSeconds": {
+                  "type": "integer",
+                  "nullable": true
+                }
+              }
+            }
           }
         }
       },
@@ -2419,7 +5765,12 @@
             "type": "number"
           },
           "liquidity": {
-            "type": "number"
+            "type": "number",
+            "description": "Total liquidity across all active AMM pools for this pair on the network, computed as sum(reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at each pool's latest snapshot spot price."
+          },
+          "liquidity_unit": {
+            "type": "string",
+            "description": "The asset symbol/identifier that liquidity is denominated in, corresponding to the counter/quote asset (asset_b) of the pair (the asset after the slash in pair_key)."
           }
         }
       },
@@ -2433,6 +5784,14 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ],
+            "description": "The network answered for."
+          },
           "data": {
             "type": "array",
             "items": {
@@ -2449,6 +5808,131 @@
           "total": {
             "type": "integer",
             "nullable": true
+          }
+        }
+      },
+      "MoverItem": {
+        "type": "object",
+        "required": [
+          "pairKey",
+          "assetA",
+          "assetB",
+          "priceChangePct",
+          "startPrice",
+          "endPrice",
+          "currentVolume",
+          "previousVolume",
+          "volumeChangePct",
+          "venues",
+          "isSingleVenue",
+          "sampleCount",
+          "lastUpdated"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "pairKey": {
+            "type": "string"
+          },
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "priceChangePct": {
+            "type": "number",
+            "nullable": true
+          },
+          "startPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "endPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "currentVolume": {
+            "type": "number"
+          },
+          "previousVolume": {
+            "type": "number"
+          },
+          "volumeChangePct": {
+            "type": "number",
+            "nullable": true
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isSingleVenue": {
+            "type": "boolean"
+          },
+          "sampleCount": {
+            "type": "integer"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "MoversResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "window",
+          "startTime",
+          "endTime",
+          "gainers",
+          "losers",
+          "volumeMovers"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "1h",
+              "24h",
+              "7d"
+            ]
+          },
+          "startTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "gainers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MoverItem"
+            }
+          },
+          "losers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MoverItem"
+            }
+          },
+          "volumeMovers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MoverItem"
+            }
           }
         }
       },
@@ -2561,6 +6045,147 @@
           "computedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "CorrelationResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "window",
+          "startTime",
+          "endTime",
+          "assets",
+          "matrix",
+          "sampleCounts",
+          "pairs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "5m",
+              "15m",
+              "1h",
+              "24h",
+              "7d",
+              "30d"
+            ]
+          },
+          "startTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "matrix": {
+            "type": "object",
+            "description": "Symmetric correlation matrix keyed by asset pair",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "nullable": true
+              }
+            }
+          },
+          "sampleCounts": {
+            "type": "object",
+            "description": "Overlapping sample count per pair",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            }
+          },
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CorrelationCell"
+            }
+          }
+        }
+      },
+      "CorrelationCell": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "coefficient",
+          "status",
+          "sampleCount",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "coefficient": {
+            "type": "number",
+            "nullable": true,
+            "description": "Pearson correlation coefficient between -1 and 1, or null if insufficient"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "computed",
+              "insufficient"
+            ]
+          },
+          "sampleCount": {
+            "type": "integer"
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "sampleCount",
+              "venues",
+              "oldestSample",
+              "newestSample"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "sampleCount": {
+                "type": "integer"
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "oldestSample": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "newestSample": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              }
+            }
           }
         }
       },
@@ -2717,6 +6342,34 @@
           },
           "quotaExceeded": {
             "type": "boolean"
+          },
+          "dailyResetsAt": {
+            "type": "string"
+          },
+          "monthlyResetsAt": {
+            "type": "string"
+          },
+          "resets": {
+            "type": "object",
+            "properties": {
+              "daily": {
+                "type": "string"
+              },
+              "monthly": {
+                "type": "string"
+              }
+            }
+          },
+          "resetsInSeconds": {
+            "type": "object",
+            "properties": {
+              "daily": {
+                "type": "integer"
+              },
+              "monthly": {
+                "type": "integer"
+              }
+            }
           }
         }
       },
