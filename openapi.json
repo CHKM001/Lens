@@ -546,6 +546,16 @@
             "example": "USDC"
           },
           {
+            "name": "staleThreshold",
+            "in": "query",
+            "required": false,
+            "description": "Max age in seconds before the price is marked stale (overrides default staleness bound).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
             "$ref": "#/components/parameters/NetworkQuery"
           },
           {
@@ -576,6 +586,89 @@
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/premium/{assetA}/{assetB}": {
+      "get": {
+        "operationId": "getPremium",
+        "summary": "Get on-chain vs CEX price premium and spread",
+        "description": "Returns the on-chain price, the best CEX price, the spread in basis points, both sources, and both timestamps. Refuses to answer with a 400 when either side is older than the configured staleness bound.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "assetA",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "XLM"
+          },
+          {
+            "name": "assetB",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USDC"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Premium and spread calculation",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PremiumResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stale price data or unrecognised network",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PremiumErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "code"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -701,7 +794,7 @@
       "get": {
         "operationId": "getPriceHistory",
         "summary": "Get price history buckets",
-        "description": "Returns price aggregate buckets (1m, 5m, 1h, 24h). Prices are serialized up to 18 decimal places and volumes up to 7 decimal places matching Stellar stroop precision.",
+        "description": "Returns price aggregate buckets (1m, 5m, 1h, 24h). Buckets are aggregated with exact numeric arithmetic in the database, so a sum does not depend on the order rows were summed in; values are narrowed to JSON numbers at the edge.",
         "security": [],
         "parameters": [
           {
@@ -779,6 +872,15 @@
                     },
                     "window": {
                       "type": "string"
+                    },
+                    "incomplete": {
+                      "type": "boolean"
+                    },
+                    "gaps": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DataGap"
+                      }
                     },
                     "buckets": {
                       "type": "array",
@@ -1077,6 +1179,15 @@
                     },
                     "hasMore": {
                       "type": "boolean"
+                    },
+                    "incomplete": {
+                      "type": "boolean"
+                    },
+                    "gaps": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DataGap"
+                      }
                     }
                   }
                 }
@@ -1245,6 +1356,15 @@
                     "to": {
                       "type": "string",
                       "format": "date-time"
+                    },
+                    "incomplete": {
+                      "type": "boolean"
+                    },
+                    "gaps": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DataGap"
+                      }
                     },
                     "count": {
                       "type": "integer",
@@ -1737,6 +1857,16 @@
             }
           },
           {
+            "name": "staleThreshold",
+            "in": "query",
+            "required": false,
+            "description": "Max age in seconds before the price is marked stale (overrides default staleness bound).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
             "$ref": "#/components/parameters/NetworkQuery"
           },
           {
@@ -1943,6 +2073,115 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/coverage": {
+      "get": {
+        "operationId": "getOverallCoverage",
+        "summary": "Get overall market coverage ratio and cross-venue activity",
+        "description": "Compares indexed trade activity in Lens across all tracked assets against total network activity from Horizon over a time window.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overall coverage metrics across all tracked assets",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverallCoverageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/coverage/{asset}": {
+      "get": {
+        "operationId": "getAssetCoverage",
+        "summary": "Get market coverage ratio and venue breakdown for a specific asset",
+        "description": "Compares indexed trade volume and count for a specific asset against total network activity from Horizon over a time window.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USDC"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Market coverage metrics for the requested asset",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetCoverageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2297,6 +2536,236 @@
         }
       }
     },
+    "/v1/compare/{asset}/history": {
+      "get": {
+        "operationId": "compareAssetHistory",
+        "summary": "Query historical oracle comparison series and window summary statistics",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "XLM"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "oracle",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter to comparisons for a specific oracle adapter",
+            "example": "reflector"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "5m",
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d"
+              ]
+            },
+            "description": "Lookback window ending now (ignored if both from and to are specified)",
+            "example": "24h"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Start of the query window (ISO 8601)"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "End of the query window (ISO 8601)"
+          },
+          {
+            "name": "band",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1
+            },
+            "description": "Deviation percentage threshold for outside-band duration calculation"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000,
+              "default": 1000
+            },
+            "description": "Maximum number of history points to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Historical oracle comparison points and window summary statistics",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OracleComparisonHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/compare/{asset}/summary": {
+      "get": {
+        "operationId": "compareAssetSummary",
+        "summary": "Summary statistics per oracle over a window (mean deviation, worst deviation, time outside band)",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "XLM"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "oracle",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter to comparisons for a specific oracle adapter",
+            "example": "reflector"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "5m",
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d"
+              ]
+            },
+            "description": "Lookback window ending now (ignored if both from and to are specified)",
+            "example": "24h"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Start of the query window (ISO 8601)"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "End of the query window (ISO 8601)"
+          },
+          {
+            "name": "band",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1
+            },
+            "description": "Deviation percentage threshold for outside-band duration calculation"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000,
+              "default": 1000
+            },
+            "description": "Maximum number of comparisons evaluated"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oracle summary statistics over the window",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OracleComparisonSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
     "/v1/screener": {
       "get": {
         "operationId": "screenPairs",
@@ -2531,6 +3000,39 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/pegs": {
+      "get": {
+        "operationId": "getPegs",
+        "summary": "Get peg deviation and window statistics for all configured pegged assets",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of configured pegged assets and their peg deviations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PegsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid network parameter"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         }
       }
@@ -4364,6 +4866,24 @@
           "lastTradeAgeSeconds": {
             "type": "integer",
             "nullable": true
+          },
+          "newestInputObservedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Observation timestamp of the newest input data point used."
+          },
+          "inputCount": {
+            "type": "integer",
+            "description": "Count of input data points used in the calculation."
+          },
+          "stalenessThresholdSeconds": {
+            "type": "integer",
+            "description": "Configured staleness threshold in seconds for this response."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds."
           }
         }
       },
@@ -5138,7 +5658,11 @@
           "endTime",
           "sampleCount",
           "outlierRejected",
-          "filterMethod"
+          "filterMethod",
+          "newestInputObservedAt",
+          "inputCount",
+          "stalenessThresholdSeconds",
+          "stale"
         ],
         "additionalProperties": false,
         "properties": {
@@ -5194,6 +5718,33 @@
               "iqr",
               "modified_zscore"
             ]
+          },
+          "newestInputObservedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Observation timestamp of the newest input data point used."
+          },
+          "inputCount": {
+            "type": "integer",
+            "description": "Count of input data points used in the calculation."
+          },
+          "stalenessThresholdSeconds": {
+            "type": "integer",
+            "description": "Configured staleness threshold in seconds for this response."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds."
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DataGap"
+            }
           }
         }
       },
@@ -5212,7 +5763,11 @@
           "sampleCount",
           "volumeTotal",
           "outlierRejected",
-          "filterMethod"
+          "filterMethod",
+          "newestInputObservedAt",
+          "inputCount",
+          "stalenessThresholdSeconds",
+          "stale"
         ],
         "additionalProperties": false,
         "properties": {
@@ -5277,6 +5832,63 @@
             "enum": [
               "iqr",
               "modified_zscore"
+            ]
+          },
+          "newestInputObservedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Observation timestamp of the newest input data point used."
+          },
+          "inputCount": {
+            "type": "integer",
+            "description": "Count of input data points used in the calculation."
+          },
+          "stalenessThresholdSeconds": {
+            "type": "integer",
+            "description": "Configured staleness threshold in seconds for this response."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds."
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DataGap"
+            }
+          }
+        }
+      },
+      "DataGap": {
+        "type": "object",
+        "required": [
+          "source",
+          "start",
+          "end",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "permanent"
             ]
           }
         }
@@ -5454,6 +6066,365 @@
                 "nullable": true
               }
             }
+          }
+        }
+      },
+      "OverallCoverageResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "window",
+          "startTime",
+          "endTime",
+          "overall",
+          "assets",
+          "provenance",
+          "methodology"
+        ],
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d",
+              "30d"
+            ]
+          },
+          "startTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "overall": {
+            "type": "object",
+            "required": [
+              "tradeCoverageRatio",
+              "totalIndexedTrades",
+              "totalNetworkTrades",
+              "assetsTracked",
+              "assetsWithActivity",
+              "status",
+              "venues"
+            ],
+            "properties": {
+              "tradeCoverageRatio": {
+                "type": "number",
+                "nullable": true
+              },
+              "volumeCoverageRatio": {
+                "type": "number",
+                "nullable": true
+              },
+              "totalIndexedTrades": {
+                "type": "integer"
+              },
+              "totalNetworkTrades": {
+                "type": "integer"
+              },
+              "assetsTracked": {
+                "type": "integer"
+              },
+              "assetsWithActivity": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "computed",
+                  "unanswerable"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "nullable": true
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "asset",
+                "coverageRatio",
+                "indexedVolume",
+                "networkVolume",
+                "indexedTradeCount",
+                "networkTradeCount",
+                "status",
+                "byVenue",
+                "venues"
+              ],
+              "properties": {
+                "asset": {
+                  "type": "string"
+                },
+                "coverageRatio": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "indexedVolume": {
+                  "type": "number"
+                },
+                "networkVolume": {
+                  "type": "number"
+                },
+                "indexedTradeCount": {
+                  "type": "integer"
+                },
+                "networkTradeCount": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "computed",
+                    "unanswerable"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "byVenue": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "number"
+                  }
+                },
+                "venues": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "lastIndexedTrade": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "venues",
+              "indexedSampleCount",
+              "networkSampleCount",
+              "asOf",
+              "horizonUrl",
+              "window",
+              "startTime",
+              "endTime"
+            ],
+            "properties": {
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "indexedSampleCount": {
+                "type": "integer"
+              },
+              "networkSampleCount": {
+                "type": "integer"
+              },
+              "asOf": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "horizonUrl": {
+                "type": "string"
+              },
+              "window": {
+                "type": "string"
+              },
+              "startTime": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "endTime": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "methodology": {
+            "type": "string"
+          }
+        }
+      },
+      "AssetCoverageResponse": {
+        "type": "object",
+        "required": [
+          "asset",
+          "network",
+          "window",
+          "startTime",
+          "endTime",
+          "coverageRatio",
+          "status",
+          "indexed",
+          "provenance",
+          "methodology"
+        ],
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d",
+              "30d"
+            ]
+          },
+          "startTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "coverageRatio": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "computed",
+              "unanswerable"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "indexed": {
+            "type": "object",
+            "required": [
+              "totalVolume",
+              "tradeCount",
+              "byVenue",
+              "venues"
+            ],
+            "properties": {
+              "totalVolume": {
+                "type": "number"
+              },
+              "tradeCount": {
+                "type": "integer"
+              },
+              "byVenue": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "networkActivity": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "totalVolume": {
+                "type": "number"
+              },
+              "tradeCount": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "horizonUrl": {
+                "type": "string"
+              }
+            }
+          },
+          "tradeCoverageRatio": {
+            "type": "number",
+            "nullable": true
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "venues",
+              "indexedSampleCount",
+              "networkSampleCount",
+              "hasGap",
+              "asOf",
+              "horizonUrl"
+            ],
+            "properties": {
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "indexedSampleCount": {
+                "type": "integer"
+              },
+              "networkSampleCount": {
+                "type": "integer"
+              },
+              "lastIndexedTrade": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "dataAgeSeconds": {
+                "type": "number",
+                "nullable": true
+              },
+              "hasGap": {
+                "type": "boolean"
+              },
+              "asOf": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "horizonUrl": {
+                "type": "string"
+              }
+            }
+          },
+          "methodology": {
+            "type": "string"
           }
         }
       },
@@ -5744,6 +6715,242 @@
                   "nullable": true
                 }
               }
+            }
+          }
+        }
+      },
+      "OracleComparisonPoint": {
+        "type": "object",
+        "required": [
+          "timestamp",
+          "oracle",
+          "lensPrice",
+          "oraclePrice",
+          "deviationPct",
+          "status",
+          "venues",
+          "sampleCount",
+          "oracleTimestamp",
+          "ageSeconds"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "oracle": {
+            "type": "string"
+          },
+          "lensPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "oraclePrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "deviationPct": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string"
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Venues that contributed to the Lens VWAP calculation"
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "Number of trade observations in the Lens VWAP window"
+          },
+          "oracleTimestamp": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "OracleSummaryStatistic": {
+        "type": "object",
+        "required": [
+          "oracle",
+          "meanDeviationPct",
+          "worstDeviationPct",
+          "timeOutsideBandSeconds",
+          "outsideBandPct",
+          "bandPct",
+          "samples",
+          "venues",
+          "freshestComparison",
+          "oldestComparison",
+          "status"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "oracle": {
+            "type": "string"
+          },
+          "meanDeviationPct": {
+            "type": "number",
+            "nullable": true,
+            "description": "Mean percentage deviation from Lens VWAP across valid samples"
+          },
+          "worstDeviationPct": {
+            "type": "number",
+            "nullable": true,
+            "description": "Maximum observed percentage deviation from Lens VWAP in the window"
+          },
+          "timeOutsideBandSeconds": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total seconds in the window where the oracle deviated beyond bandPct"
+          },
+          "outsideBandSeconds": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Alias for timeOutsideBandSeconds"
+          },
+          "outsideBandPct": {
+            "type": "number",
+            "nullable": true,
+            "description": "Percentage of window duration spent outside bandPct"
+          },
+          "bandPct": {
+            "type": "number",
+            "description": "Deviation percentage threshold applied for outside-band calculations"
+          },
+          "samples": {
+            "type": "integer",
+            "description": "Number of comparison samples in the window"
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Distinct venues that contributed to Lens VWAPs across all samples"
+          },
+          "freshestComparison": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "oldestComparison": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Latest status or alignment health"
+          }
+        }
+      },
+      "OracleComparisonHistoryResponse": {
+        "type": "object",
+        "required": [
+          "asset",
+          "network",
+          "from",
+          "to",
+          "band",
+          "points",
+          "summary"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "nullable": true
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "band": {
+            "type": "number"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OracleComparisonPoint"
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OracleSummaryStatistic"
+            }
+          }
+        }
+      },
+      "OracleComparisonSummaryResponse": {
+        "type": "object",
+        "required": [
+          "asset",
+          "network",
+          "from",
+          "to",
+          "band",
+          "summary"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "nullable": true
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "band": {
+            "type": "number"
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OracleSummaryStatistic"
             }
           }
         }
@@ -6504,6 +7711,198 @@
                   "type": "string"
                 }
               }
+            }
+          }
+        }
+      },
+      "PremiumPricePoint": {
+        "type": "object",
+        "required": [
+          "price",
+          "source",
+          "timestamp"
+        ],
+        "properties": {
+          "price": {
+            "type": "number"
+          },
+          "source": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PremiumResponse": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "network",
+          "onChain",
+          "cex",
+          "spreadBps"
+        ],
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string"
+          },
+          "onChain": {
+            "$ref": "#/components/schemas/PremiumPricePoint"
+          },
+          "cex": {
+            "$ref": "#/components/schemas/PremiumPricePoint"
+          },
+          "spreadBps": {
+            "type": "number"
+          }
+        }
+      },
+      "PremiumErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "string",
+            "enum": [
+              "onChain",
+              "cex",
+              "both"
+            ]
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          },
+          "onChainAgeSeconds": {
+            "type": "integer",
+            "nullable": true
+          },
+          "cexAgeSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "PegReport": {
+        "type": "object",
+        "required": [
+          "asset",
+          "code",
+          "issuer",
+          "target",
+          "targetPrice",
+          "pairKey",
+          "currentPrice",
+          "currentDeviationBps",
+          "worstDeviationBps",
+          "window",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "nullable": true
+          },
+          "target": {
+            "type": "string"
+          },
+          "targetPrice": {
+            "type": "number"
+          },
+          "pairKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "currentPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "currentDeviationBps": {
+            "type": "number",
+            "nullable": true
+          },
+          "worstDeviationBps": {
+            "type": "number",
+            "nullable": true
+          },
+          "window": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "venues",
+              "sampleCount",
+              "freshnessSeconds",
+              "lastSampleTimestamp"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "freshnessSeconds": {
+                "type": "integer",
+                "nullable": true
+              },
+              "lastSampleTimestamp": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "PegsResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "pegs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "pegs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PegReport"
             }
           }
         }
